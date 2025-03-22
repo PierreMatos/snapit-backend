@@ -6,7 +6,7 @@ import boto3
 
 # LightX API Configuration
 LIGHTX_STATUS_URL = "/external/api/v1/order-status"
-LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3798_andoraitools"
+LIGHTX_API_KEY = "009243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3798_andoraitools"
 
 # DynamoDB Configuration
 dynamodb = boto3.resource("dynamodb")
