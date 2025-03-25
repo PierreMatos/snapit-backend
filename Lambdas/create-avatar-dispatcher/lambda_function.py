@@ -45,11 +45,12 @@ def lambda_handler(event, context):
             full_path = f"{parsed.path}?{query}"
 
             conn = http.client.HTTPSConnection(parsed.hostname)
-            conn.request("GET", full_path, headers={"Content-Type": "application/json"})
+            conn.request("GET", full_path, headers={"Content-Type": "Authorization"})
 
             response = conn.getresponse()
             body = response.read().decode()
             res_json = json.loads(body)
+            results.append(res_json)
 
             return res_json.get("orderIds", [res_json.get("orderId")])
 
