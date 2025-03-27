@@ -11,8 +11,8 @@ def lambda_handler(event, context):
     try:
         # Parse body and extract single orderId
         body = json.loads(event.get("body", "{}"))
-        #order_id = body.get("orderId")
-        order_id = "b8c76281183c4b45988fe6210c353e54"
+        order_id = body.get("orderId")
+        #order_id = "b8c76281183c4b45988fe6210c353e54"
 
         if not order_id:
             return {
@@ -39,12 +39,13 @@ def lambda_handler(event, context):
                 image_url = data["body"]["output"]
                 break
 
-            time.sleep(3)
+            time.sleep(5)
+            #return{"response" : "ola"}
 
         if image_url:
             return {
                 "statusCode": 200,
-                "body": json.dumps({"output": image_url})
+                "body": ({"image_url": image_url})
             }
         else:
             return {
