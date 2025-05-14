@@ -16,8 +16,8 @@ def lambda_handler(event, context):
     try:
         # 1. Get image URL from event (from check-order-status result)
         body = json.loads(event.get("body", "{}"))
-        #image_url = body.get("imageUrl")
-        image_url = "https://d3aa3s3yhl0emm.cloudfront.net/output/lx/avatarify/583a8bf73bb943ab84b1fbad5b2496ba_1024x1024.jpg"
+        image_url = body.get("imageUrl")
+        #image_url = "https://d3aa3s3yhl0emm.cloudfront.net/output/lx/avatarify/583a8bf73bb943ab84b1fbad5b2496ba_1024x1024.jpg"
 
         if not image_url:
             return {"statusCode": 400, "body": json.dumps({"error": "Missing imageUrl parameter"})}
@@ -46,24 +46,30 @@ def lambda_handler(event, context):
 
         # 7. Poll for result (max 5 tries)
         for attempt in range(5):
-            time.sleep(3)
+            time.sleep(15)
             status_payload = json.dumps({"orderId": order_id})
             conn.request("POST", LIGHTX_STATUS_URL, status_payload, headers)
             res = conn.getresponse()
             status_data = json.loads(res.read().decode())
 
-            if status_data["body"].get("status") == "active":
+            # ✅ Check if output exists and is not null/empty
+            output_url = status_data.get("body", {}).get("output")
+            if output_url:
                 return {
                     "statusCode": 200,
                     "body": json.dumps({
                         "orderId": order_id,
-                        "output": status_data["body"]["output"]
+                        "image_url": output_url
                     })
                 }
 
+        # If all attempts fail, return an error
         return {
             "statusCode": 408,
-            "body": json.dumps({"error": "Timeout waiting for formatted image"})
+            "body": json.dumps({
+                "error": "Timed out waiting for image to be ready",
+                "orderId": order_id
+            })
         }
 
     except Exception as e:
