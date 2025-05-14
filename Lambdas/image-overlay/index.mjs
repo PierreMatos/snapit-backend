@@ -2,6 +2,7 @@ import https from 'https';
 import sharp from 'sharp';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import http from 'http';
+import qrcode from 'qrcode';
 
 
 const s3 = new S3Client({ region: 'eu-central-1' });
@@ -13,12 +14,13 @@ export const handler = async (event) => {
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event;
 
-    const originalImageUrl = body.imageUrl;
+    const originalImageUrl = body.imageUrl; // Will be avatarUrl
     const overlayUrl = body.overlayUrl;
-    const orderId = body.orderId
+    const orderId = body.orderId;
+    const requestId = body.requestId; // Added requestId
 
-    if (!originalImageUrl || !overlayUrl) {
-      throw new Error("Missing imageUrl or overlayUrl");
+    if (!originalImageUrl || !overlayUrl || !orderId || !requestId) {
+      throw new Error("Missing imageUrl, overlayUrl, orderId, or requestId");
     }
 
     // Step 1: Resize with LightX (expand-photo)
@@ -30,15 +32,40 @@ export const handler = async (event) => {
       fetchImage(overlayUrl)
     ]);
 
-    // Step 3: Composite overlay
-    const finalImageBuffer = await sharp(avatarBuffer)
+    // Step 3a: Generate QR Code
+    const qrCodeUrl = `https://master.d1m6exe13kof96.amplifyapp.com/request/${requestId}`;
+    const qrCodeBuffer = await qrcode.toBuffer(qrCodeUrl, {
+      errorCorrectionLevel: 'H', // High error correction
+      type: 'png',
+      margin: 1, // Minimal margin
+      width: 200 // Initial width, will be resized based on the main image
+    });
+
+    // Step 3b: Composite overlay onto avatar first
+    const avatarWithOverlayBuffer = await sharp(avatarBuffer)
       .composite([{ input: overlayBuffer, top: 0, left: 0 }])
+      .toBuffer();
+
+    // Step 3c: Composite QR code onto the avatar+overlay image
+    const avatarWithOverlayMetadata = await sharp(avatarWithOverlayBuffer).metadata();
+    const qrCodeSize = Math.floor(avatarWithOverlayMetadata.width * 0.15); // 15% of avatar+overlay width
+
+    const qrCodeResizedBuffer = await sharp(qrCodeBuffer)
+      .resize(qrCodeSize)
+      .toBuffer();
+
+    // Position QR code at bottom right of the avatar+overlay image (adjust padding as needed)
+    const qrTop = avatarWithOverlayMetadata.height - qrCodeSize - Math.floor(avatarWithOverlayMetadata.height * 0.02); // 5% padding from bottom
+    const qrLeft = avatarWithOverlayMetadata.width - qrCodeSize - Math.floor(avatarWithOverlayMetadata.width * 0.05);   // 5% padding from right
+
+    const finalImageBuffer = await sharp(avatarWithOverlayBuffer)
+      .composite([{ input: qrCodeResizedBuffer, top: qrTop, left: qrLeft }])
       .jpeg()
       .toBuffer();
 
     // Step 4: Upload to S3
     const bucketName = 'snapitbucket';
-    const key = `outputs/final_${orderId}.jpg`;
+    const key = `prints/${orderId}.jpg`; // Updated S3 key
 
     await s3.send(new PutObjectCommand({
       Bucket: bucketName,
@@ -52,8 +79,7 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       body: JSON.stringify({
-        orderId: orderId,
-        image_url: s3Url
+        finalImageUrl: s3Url // Updated response key
       }),
     };
 
