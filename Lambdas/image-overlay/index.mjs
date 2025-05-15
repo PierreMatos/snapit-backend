@@ -66,12 +66,14 @@ export const handler = async (event) => {
     // Step 4: Upload to S3
     const bucketName = 'snapitbucket';
     const key = `prints/${orderId}.jpg`; // Updated S3 key
+    const printFilename = `snapit_print_${orderId}.jpg`; // Desired filename for download
 
     await s3.send(new PutObjectCommand({
       Bucket: bucketName,
       Key: key,
       Body: finalImageBuffer,
       ContentType: 'image/jpeg',
+      ContentDisposition: `attachment; filename="${printFilename}"`
     }));
 
     const s3Url = `https://${bucketName}.s3.eu-central-1.amazonaws.com/${key}`;
