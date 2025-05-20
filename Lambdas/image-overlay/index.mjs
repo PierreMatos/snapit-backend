@@ -3,9 +3,14 @@ import sharp from 'sharp';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import http from 'http';
 import qrcode from 'qrcode';
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 
 const s3 = new S3Client({ region: 'eu-central-1' });
+const dynamoDBClient = new DynamoDBClient({ region: 'eu-central-1' });
+const docClient = DynamoDBDocumentClient.from(dynamoDBClient);
+const avatarsTableName = 'Avatars'; // Define Avatars table name
 
 const LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3798_andoraitools";
 const LIGHTX_HOST = "api.lightxeditor.com";
@@ -21,6 +26,23 @@ export const handler = async (event) => {
 
     if (!originalImageUrl || !overlayUrl || !orderId || !requestId) {
       throw new Error("Missing imageUrl, overlayUrl, orderId, or requestId");
+    }
+
+    // Check if orderId already exists in Avatars table (as 'id')
+    const getItemParams = {
+      TableName: avatarsTableName,
+      Key: { id: orderId },
+    };
+    const { Item } = await docClient.send(new GetCommand(getItemParams));
+
+    if (Item && Item.output_url) { // Check if item exists and has an output_url
+      return {
+        statusCode: 200, // Or 409 Conflict if you prefer to indicate it's already processed
+        body: JSON.stringify({
+          message: `Order ID ${orderId} has already been processed.`,
+          finalImageUrl: Item.output_url, // Return existing URL
+        }),
+      };
     }
 
     // Step 1: Resize with LightX (expand-photo)
@@ -77,6 +99,19 @@ export const handler = async (event) => {
     }));
 
     const s3Url = `https://${bucketName}.s3.eu-central-1.amazonaws.com/${key}`;
+
+    // Store S3 URL in DynamoDB
+    const updateItemParams = {
+      TableName: avatarsTableName,
+      Key: { id: orderId }, // orderId from input corresponds to 'id' in Avatars table
+      UpdateExpression: "set output_url = :url, requestId = :reqId", // also store requestId
+      ExpressionAttributeValues: {
+        ":url": s3Url,
+        ":reqId": requestId,
+      },
+      ReturnValues: "UPDATED_NEW",
+    };
+    await docClient.send(new UpdateCommand(updateItemParams));
 
     return {
       statusCode: 200,
