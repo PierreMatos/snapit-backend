@@ -13,8 +13,8 @@ def lambda_handler(event, context):
 
     # --- Configuration ---
     # Get from environment variables set in the Lambda configuration
-    print_lambda_function_name = os.environ.get('PRINT_LAMBDA_FUNCTION_NAME')
-    overlay_image_url = os.environ.get('OVERLAY_IMAGE_URL')
+    print_lambda_function_name = 'arn:aws:lambda:eu-central-1:598011222931:function:image-overlay'
+    overlay_image_url = 'https://snapitbucket.s3.eu-central-1.amazonaws.com/assets/moldura%2Bcom%2Btransparencia.png'
 
     if not print_lambda_function_name or not overlay_image_url:
         print("Error: Missing environment variables: PRINT_LAMBDA_FUNCTION_NAME or OVERLAY_IMAGE_URL")
@@ -63,20 +63,22 @@ def lambda_handler(event, context):
 
     # --- Process Each Avatar ---
     for avatar in avatars:
-        if not all(k in avatar for k in ('imageUrl', 'originalRequestId', 'filterId')):
-            print(f"Warning: Skipping avatar due to missing details for async invocation: {avatar.get('filterId', 'Unknown filter')}")
+        # filterId is now optional for the invoker itself, as it's not passed downstream to /api/print
+        # It's still good to receive it from frontend for logging if available.
+        if not all(k in avatar for k in ('imageUrl', 'originalRequestId', 'generationOrderId')):
+            print(f"Warning: Skipping avatar due to missing essential details (imageUrl, originalRequestId, generationOrderId): {avatar.get('filterId', 'Unknown filter')}")
             failed_to_initiate_count += 1
             continue
 
-        # Generate a unique ID for this specific overlay job (can be passed to the print lambda)
-        overlay_order_id = str(uuid.uuid4())
+        # Use the generationOrderId from the frontend as the orderId for the print lambda
+        order_id_for_print_lambda = avatar['generationOrderId']
 
         # Payload for your existing image-overlay Lambda
         payload_for_print_lambda = {
             'imageUrl': avatar['imageUrl'],
             'overlayUrl': overlay_image_url,
-            'orderId': overlay_order_id,       # This is the order ID for the overlay/print job
-            'requestId': avatar['originalRequestId'] # This is the ID from the initial avatar generation
+            'orderId': order_id_for_print_lambda, # <<< USE THE RECEIVED generationOrderId HERE
+            'requestId': avatar['originalRequestId'] 
             # Add any other parameters your existing image-overlay Lambda expects
         }
 
@@ -87,12 +89,12 @@ def lambda_handler(event, context):
         }
 
         try:
-            print(f"Attempting to invoke {print_lambda_function_name} for filter {avatar['filterId']} with overlay Order ID {overlay_order_id}")
+            print(f"Attempting to invoke {print_lambda_function_name} for filter {avatar['filterId']} with Order ID {order_id_for_print_lambda}")
             response = lambda_client.invoke(**invoke_params)
 
             # For 'Event' invocation, a successful request to AWS Lambda returns StatusCode 202.
             if response.get('StatusCode') == 202:
-                print(f"Successfully initiated async overlay for {avatar['imageUrl']} (Overlay Order ID: {overlay_order_id})")
+                print(f"Successfully initiated async overlay for {avatar['imageUrl']} (Order ID: {order_id_for_print_lambda})")
                 initiated_count += 1
             else:
                 # This case is less common for 'Event' type if the invocation request itself is malformed
