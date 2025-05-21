@@ -33,17 +33,23 @@ export const handler = async (event) => {
       TableName: avatarsTableName,
       Key: { id: orderId },
     };
+    console.log(`Checking for existing processed image for orderId (id): ${orderId}`);
     const { Item } = await docClient.send(new GetCommand(getItemParams));
 
-    if (Item && Item.output_url) { // Check if item exists and has an output_url
+    if (Item && Item.output_url) {
+      console.log(`Order ID ${orderId} has already been processed. Returning existing URL: ${Item.output_url}`);
       return {
-        statusCode: 200, // Or 409 Conflict if you prefer to indicate it's already processed
+        statusCode: 200,
         body: JSON.stringify({
-          message: `Order ID ${orderId} has already been processed.`,
           finalImageUrl: Item.output_url, // Return existing URL
         }),
+        headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*" // Adjust CORS as needed
+        }
       };
     }
+    console.log(`No existing processed image found for orderId ${orderId}, proceeding with generation.`);
 
     // Step 1: Resize with LightX (expand-photo)
     const resizedUrl = await expandWithLightX(originalImageUrl);
@@ -55,7 +61,7 @@ export const handler = async (event) => {
     ]);
 
     // Step 3a: Generate QR Code
-    const qrCodeUrl = `https://master.d1m6exe13kof96.amplifyapp.com/request/${requestId}`;
+    const qrCodeUrl = `https://master.d1m6exe13kof96.amplifyapp.com/avatars/${requestId}`;
     const qrCodeBuffer = await qrcode.toBuffer(qrCodeUrl, {
       errorCorrectionLevel: 'H', // High error correction
       type: 'png',
@@ -104,7 +110,7 @@ export const handler = async (event) => {
     const updateItemParams = {
       TableName: avatarsTableName,
       Key: { id: orderId }, // orderId from input corresponds to 'id' in Avatars table
-      UpdateExpression: "set output_url = :url, requestId = :reqId", // also store requestId
+      UpdateExpression: "set output_url = :url, request_id = :reqId", // also store requestId
       ExpressionAttributeValues: {
         ":url": s3Url,
         ":reqId": requestId,
@@ -118,6 +124,10 @@ export const handler = async (event) => {
       body: JSON.stringify({
         finalImageUrl: s3Url // Updated response key
       }),
+      headers: { // Ensure headers are also on the final success response
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*" // Adjust CORS as needed
+      }
     };
 
   } catch (error) {
@@ -128,6 +138,10 @@ export const handler = async (event) => {
         message: 'Failed to process and upload image',
         error: error.message
       }),
+      headers: { // Ensure headers are also on the error response
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*" // Adjust CORS as needed
+      }
     };
   }
 };
