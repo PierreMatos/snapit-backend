@@ -1,6 +1,7 @@
 import json
 import boto3
 import os
+import re
 
 # Initialize DynamoDB client
 # It's good practice to initialize outside the handler for potential reuse
@@ -8,6 +9,17 @@ dynamodb = boto3.resource('dynamodb')
 # Table name from environment variable or a default
 AVATARS_TABLE_NAME = os.environ.get('AVATARS_TABLE_NAME', 'Avatars')
 table = dynamodb.Table(AVATARS_TABLE_NAME)
+
+def clean_request_id(raw_id: str) -> str:
+    """
+    Extracts the UUID from a full requestId string, ignoring anything after a slash or query.
+    """
+    if not raw_id:
+        return ""
+    match = re.match(r'^([a-f0-9\-]{36})', raw_id)
+    if match:
+        return match.group(1)
+    return raw_id  # fallback
 
 def lambda_handler(event, context):
     """
@@ -22,11 +34,13 @@ def lambda_handler(event, context):
     # Only extract from pathParameters
     if 'pathParameters' in event and event['pathParameters'] is not None:
         if 'request_id' in event['pathParameters']:
-            request_id_value = event['pathParameters']['request_id']
-            print(f"Extracted request_id from pathParameters (key: request_id): {request_id_value}")
+            raw_id = event['pathParameters']['request_id']
+            request_id_value = clean_request_id(raw_id)
+            print(f"Extracted and cleaned request_id from pathParameters: {request_id_value}")
         elif 'request-id' in event['pathParameters']:
-            request_id_value = event['pathParameters']['request-id']
-            print(f"Extracted request_id from pathParameters (key: request-id): {request_id_value}")
+            raw_id = event['pathParameters']['request-id']
+            request_id_value = clean_request_id(raw_id)
+            print(f"Extracted and cleaned request_id from pathParameters: {request_id_value}")
 
     if not request_id_value:
         error_payload = {
