@@ -3,14 +3,14 @@
         {
             "type": "aws-sam",
             "request": "direct-invoke",
-            "name": "resize-image:lambda_function.lambda_handler (python3.13)",
+            "name": "image-overlay:index.handler (nodejs18.x)",
             "invokeTarget": {
                 "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/resize-image",
-                "lambdaHandler": "lambda_function.lambda_handler"
+                "projectRoot": "${workspaceFolder}/image-overlay",
+                "lambdaHandler": "index.handler"
             },
             "lambda": {
-                "runtime": "python3.13",
+                "runtime": "nodejs18.x",
                 "payload": {},
                 "environmentVariables": {}
             }
@@ -18,190 +18,10 @@
         {
             "type": "aws-sam",
             "request": "direct-invoke",
-            "name": "create-single-avatar:lambda_function.lambda_handler (python3.13)",
+            "name": "avatar-overlay:lambda_function.lambda_handler (python3.13)",
             "invokeTarget": {
                 "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-single-avatar",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-avatar-dispatcher:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-avatar-dispatcher",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "check-order-status:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/check-order-status",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-single-avatar:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-single-avatar",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-avatar-dispatcher:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-avatar-dispatcher",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "check-order-status:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/check-order-status",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-single-avatar:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-single-avatar",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-avatar-dispatcher:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-avatar-dispatcher",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "check-order-status:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/check-order-status",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "check-order-status:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/check-order-status",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-snapit:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/create-snapit",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "create-snapit:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/create-snapit",
-                "lambdaHandler": "lambda_function.lambda_handler"
-            },
-            "lambda": {
-                "runtime": "python3.13",
-                "payload": {},
-                "environmentVariables": {}
-            }
-        },
-        {
-            "type": "aws-sam",
-            "request": "direct-invoke",
-            "name": "checkstatus-snapit:lambda_function.lambda_handler (python3.13)",
-            "invokeTarget": {
-                "target": "code",
-                "projectRoot": "${workspaceFolder}/Lambdas/checkstatus-snapit",
+                "projectRoot": "${workspaceFolder}/avatar-overlay",
                 "lambdaHandler": "lambda_function.lambda_handler"
             },
             "lambda": {
