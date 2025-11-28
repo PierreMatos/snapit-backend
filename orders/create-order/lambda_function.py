@@ -3,6 +3,7 @@ import json
 import os
 import boto3
 import uuid
+from decimal import Decimal
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
@@ -41,6 +42,18 @@ def handle_options():
         "headers": CORS_HEADERS,
         "body": ""
     }
+
+def convert_decimals(obj):
+    """Recursively convert Decimal objects to int/float for JSON serialization"""
+    if isinstance(obj, Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_decimals(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    return obj
 
 def generate_order_id():
     """Generate sequential order ID (A1, A2, A3, etc.) using counter table"""
@@ -181,6 +194,9 @@ def lambda_handler(event, context):
         
         # Save to DynamoDB
         orders_table.put_item(Item=order_item)
+        
+        # Convert Decimal objects to int/float for JSON serialization
+        order_item = convert_decimals(order_item)
         
         return get_cors_response(200, {
             "success": True,

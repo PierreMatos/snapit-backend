@@ -2,6 +2,7 @@
 import json
 import os
 import boto3
+from decimal import Decimal
 
 # Initialize DynamoDB
 dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'eu-central-1'))
@@ -38,6 +39,18 @@ def handle_options():
         "headers": CORS_HEADERS,
         "body": ""
     }
+
+def convert_decimals(obj):
+    """Recursively convert Decimal objects to int/float for JSON serialization"""
+    if isinstance(obj, Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_decimals(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    return obj
 
 def get_avatars_by_ids(avatar_ids):
     """Batch get avatars from DynamoDB"""
@@ -156,6 +169,9 @@ def lambda_handler(event, context):
         order_dict["avatars"] = avatars
         if request:
             order_dict["request"] = request
+        
+        # Convert Decimal objects to int/float for JSON serialization
+        order_dict = convert_decimals(order_dict)
         
         return get_cors_response(200, {"order": order_dict})
         
