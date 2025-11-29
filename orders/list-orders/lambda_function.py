@@ -190,6 +190,10 @@ def lambda_handler(event, context):
             order_dict = convert_decimals(order_dict)
             orders.append(order_dict)
         
+        # Sort orders by captureTimestamp (newest first)
+        # Orders without captureTimestamp will be placed at the end
+        orders.sort(key=lambda x: x.get("captureTimestamp") or "", reverse=True)
+        
         print(f"Found {len(orders)} orders for date {date} with status {status or 'all'}")
         
         return get_cors_response(200, {"orders": orders})
