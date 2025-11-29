@@ -6,6 +6,7 @@ import uuid
 from decimal import Decimal
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Key, Attr
 
 # Initialize DynamoDB
 dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'eu-central-1'))
@@ -56,41 +57,43 @@ def convert_decimals(obj):
     return obj
 
 def generate_order_id():
-    """Generate sequential order ID (A1, A2, A3, etc.) using counter table"""
+    """Generate sequential order ID (A1, A2, A3, etc.) based on today's order count"""
     try:
-        try:
-            response = order_counter_table.update_item(
-                Key={"id": "order_counter"},
-                UpdateExpression="ADD #count :incr SET #updated = :now",
-                ExpressionAttributeNames={
-                    "#count": "count",
-                    "#updated": "updated_at"
-                },
-                ExpressionAttributeValues={
-                    ":incr": 1,
-                    ":now": datetime.now(timezone.utc).isoformat()
-                },
-                ReturnValues="UPDATED_NEW"
-            )
-            count = response["Attributes"]["count"]
-            return f"A{count}"
-        except ClientError as e:
-            if e.response['Error']['Code'] in ['ResourceNotFoundException', 'ValidationException']:
+        # Get today's date in the same format as stored in orders
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        # Count orders created today by querying all statuses
+        # Using the DateStatusIndex GSI
+        today_order_count = 0
+        statuses = ["active", "paid", "cancelled"]
+        
+        for status in statuses:
+            try:
+                response = orders_table.query(
+                    IndexName="DateStatusIndex",
+                    KeyConditionExpression=Key("date").eq(today) & Key("status").eq(status),
+                    Select="COUNT"
+                )
+                today_order_count += response.get("Count", 0)
+            except Exception as query_err:
+                # Fallback to scan if GSI query fails
+                print(f"GSI query failed for status {status}: {str(query_err)}, using scan")
                 try:
-                    order_counter_table.put_item(
-                        Item={
-                            "id": "order_counter",
-                            "count": 1,
-                            "updated_at": datetime.now(timezone.utc).isoformat()
-                        }
+                    scan_response = orders_table.scan(
+                        FilterExpression=Attr("date").eq(today) & Attr("status").eq(status),
+                        Select="COUNT"
                     )
-                    return "A1"
-                except Exception:
-                    return f"A{int(datetime.now(timezone.utc).timestamp())}"
-            else:
-                return f"A{int(datetime.now(timezone.utc).timestamp())}"
+                    today_order_count += scan_response.get("Count", 0)
+                except Exception as scan_err:
+                    print(f"Scan also failed for status {status}: {str(scan_err)}")
+        
+        # Increment count for the new order
+        next_count = today_order_count + 1
+        return f"A{next_count}"
+        
     except Exception as e:
         print(f"Error generating order ID: {str(e)}")
+        # Fallback to timestamp-based ID if everything fails
         return f"A{int(datetime.now(timezone.utc).timestamp())}"
 
 def get_avatars_by_ids(avatar_ids):
