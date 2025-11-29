@@ -423,16 +423,167 @@ def update_order_avatars(order_id, body):
         print(f"Error updating order avatars: {str(e)}")
         return get_cors_response(500, {"error": f"Failed to update order avatars: {str(e)}"})
 
+def normalize_path(path):
+    """Normalize API Gateway path by removing stage prefix if present"""
+    if not path:
+        return path
+    
+    # Ensure path starts with /
+    if not path.startswith('/'):
+        path = '/' + path
+    
+    # If path starts with /api, don't normalize - it's part of the resource path
+    if path.startswith('/api'):
+        return path
+    
+    # Split path into parts
+    path_parts = [p for p in path.split('/') if p]  # Remove empty strings
+    
+    if not path_parts:
+        return path
+    
+    # Check if first part looks like a stage name
+    # API Gateway paths can be: /stage/resource or /resource
+    first_part = path_parts[0].lower()
+    common_stages = ['prod', 'dev', 'test', 'staging', 'beta', 'alpha', 'v1', 'v2', 'production', 'development']
+    
+    # Only remove if it's a known stage name (not 'api' or other resource paths)
+    if first_part in common_stages and len(path_parts) > 1:
+        # Reconstruct path without stage
+        return '/' + '/'.join(path_parts[1:])
+    else:
+        # First part is part of the resource path, return as is
+        return '/' + '/'.join(path_parts)
+
+def extract_request_info(event):
+    """Extract HTTP method and path from event, handling REST API v1 and HTTP API v2"""
+    # Log full event structure for debugging FIRST
+    print("=" * 80)
+    print("DEBUG: Full event structure:")
+    print(json.dumps(event, indent=2, default=str))
+    print("=" * 80)
+    
+    request_context = event.get("requestContext", {})
+    
+    # Detect API type: HTTP API v2 has requestContext.http, REST API v1 has requestContext.httpMethod
+    is_http_api_v2 = "http" in request_context
+    
+    http_method = ""
+    path = ""
+    resource_path = ""
+    
+    if is_http_api_v2:
+        # HTTP API v2 format
+        print("DEBUG: Detected HTTP API v2 format")
+        http_context = request_context.get("http", {})
+        http_method = http_context.get("method", "").upper()
+        
+        # HTTP API v2 uses rawPath for the actual path
+        path = event.get("rawPath", "")
+        
+        # Also check routeKey which contains "METHOD /path"
+        route_key = request_context.get("routeKey", "")
+        if route_key:
+            # routeKey format: "GET /api/orders" or "$default"
+            parts = route_key.split(" ", 1)
+            if len(parts) == 2 and not http_method:
+                http_method = parts[0].upper()
+            if len(parts) == 2 and not path:
+                path = parts[1]
+        
+        # If routeKey is $default, it's a catch-all route - get path from pathParameters
+        if route_key == "$default" or (not path and route_key):
+            path_params = event.get("pathParameters", {})
+            if path_params:
+                # Check for proxy parameter
+                proxy_path = path_params.get("proxy", "") or path_params.get("Proxy", "")
+                if proxy_path:
+                    path = "/" + proxy_path if not proxy_path.startswith("/") else proxy_path
+        
+        resource_path = route_key
+        
+    else:
+        # REST API v1 format (standard Lambda proxy integration)
+        print("DEBUG: Detected REST API v1 format")
+        http_method = event.get("httpMethod", "").upper()
+        path = event.get("path", "")
+        resource_path = event.get("resource", "")
+        
+        # Fallback to requestContext for REST API
+        if not http_method and request_context:
+            http_method = request_context.get("httpMethod", "").upper()
+        if not path and request_context:
+            path = request_context.get("path", "")
+    
+    # Try pathParameters proxy (catch-all routes) - works for both API types
+    if not path:
+        path_params = event.get("pathParameters", {})
+        if path_params:
+            # Check for proxy parameter (used in catch-all routes like /{proxy+})
+            proxy_path = path_params.get("proxy", "") or path_params.get("Proxy", "")
+            if proxy_path:
+                path = "/" + proxy_path if not proxy_path.startswith("/") else proxy_path
+    
+    # Final fallback: try to extract from the raw event structure
+    if not path:
+        for key in ["requestPath", "request_path", "route", "uri", "requestUri"]:
+            if key in event:
+                path = event[key]
+                break
+    
+    # Normalize HTTP method
+    if http_method:
+        http_method = http_method.upper()
+    
+    print(f"DEBUG: Extracted - httpMethod='{http_method}', path='{path}', resource='{resource_path}'")
+    print(f"DEBUG: API Type: {'HTTP API v2' if is_http_api_v2 else 'REST API v1'}")
+    print(f"DEBUG: requestContext keys: {list(request_context.keys()) if request_context else 'None'}")
+    
+    return http_method, path, resource_path
+
 def lambda_handler(event, context):
     """Main Lambda handler with routing logic"""
     try:
+        # Extract request info (handles different integration types)
+        http_method, path, resource_path = extract_request_info(event)
+        
         # Handle CORS preflight
-        if event.get("httpMethod") == "OPTIONS":
+        if http_method == "OPTIONS":
             return handle_options()
         
-        # Parse request
-        http_method = event.get("httpMethod", "")
-        path = event.get("path", "")
+        # If we still don't have httpMethod or path, try to work with what we have
+        if not http_method or not path:
+            # Last resort: check if this might be a direct Lambda invocation (for testing)
+            # In that case, we can't route properly, but let's provide helpful error
+            error_msg = {
+                "error": "Cannot extract request information from event",
+                "message": "Unable to determine HTTP method or path from the event. This might indicate:",
+                "possibleCauses": [
+                    "Lambda proxy integration is not enabled in API Gateway",
+                    "Event is from a direct Lambda invocation (not through API Gateway)",
+                    "API Gateway is using a non-standard integration type",
+                    "Event structure is different than expected"
+                ],
+                "debug": {
+                    "eventKeys": list(event.keys()),
+                    "httpMethod": http_method or "NOT FOUND",
+                    "path": path or "NOT FOUND",
+                    "resource": resource_path or "NOT FOUND",
+                    "hasRequestContext": "requestContext" in event,
+                    "requestContextKeys": list(event.get("requestContext", {}).keys()) if event.get("requestContext") else [],
+                    "hasPathParameters": "pathParameters" in event,
+                    "pathParameters": event.get("pathParameters", {}),
+                    "hasHeaders": "headers" in event,
+                    "headerKeys": list(event.get("headers", {}).keys()) if event.get("headers") else []
+                },
+                "instructions": "Check CloudWatch logs for the full event structure above to diagnose the issue"
+            }
+            print(f"ERROR: {json.dumps(error_msg, indent=2, default=str)}")
+            return get_cors_response(500, error_msg)
+        
+        # Normalize path to handle stage prefixes
+        normalized_path = normalize_path(path)
+        
         path_parameters = event.get("pathParameters") or {}
         query_string_parameters = event.get("queryStringParameters") or {}
         
@@ -444,21 +595,24 @@ def lambda_handler(event, context):
             except json.JSONDecodeError:
                 pass
         
+        # Use normalized path for routing
+        route_path = normalized_path
+        
         # Route requests
         # POST /api/orders - Create Order
-        if http_method == "POST" and path == "/api/orders":
+        if http_method == "POST" and (route_path == "/api/orders" or route_path.endswith("/api/orders")):
             return create_order(body)
         
         # GET /api/orders - List Orders
-        elif http_method == "GET" and path == "/api/orders":
+        elif http_method == "GET" and (route_path == "/api/orders" or route_path.endswith("/api/orders")):
             return list_orders(query_string_parameters)
         
         # POST /api/orders/{orderId}/status - Update Order Status
-        elif http_method == "POST" and "/status" in path:
+        elif http_method == "POST" and ("/status" in route_path or route_path.endswith("/status")):
             order_id = path_parameters.get("orderId") or path_parameters.get("orderid")
             if not order_id:
                 # Try to extract from path
-                path_parts = path.split("/")
+                path_parts = route_path.split("/")
                 if len(path_parts) >= 4 and path_parts[-1] == "status":
                     order_id = path_parts[-2]
             
@@ -468,13 +622,21 @@ def lambda_handler(event, context):
             return update_order_status(order_id, body)
         
         # GET /api/orders/{orderId} - View Order
-        elif http_method == "GET" and path.startswith("/api/orders/"):
+        elif http_method == "GET" and ("/api/orders/" in route_path or route_path.startswith("/api/orders/")):
             order_id = path_parameters.get("orderId") or path_parameters.get("orderid")
             if not order_id:
                 # Try to extract from path
-                path_parts = path.split("/")
-                if len(path_parts) >= 4:
-                    order_id = path_parts[-1]
+                path_parts = route_path.split("/")
+                # Path should be like: /api/orders/{orderId} or /prod/api/orders/{orderId}
+                # Find the orderId part (after "orders")
+                try:
+                    orders_index = path_parts.index("orders")
+                    if orders_index + 1 < len(path_parts):
+                        order_id = path_parts[orders_index + 1]
+                except ValueError:
+                    # "orders" not in path, try last part
+                    if len(path_parts) >= 2:
+                        order_id = path_parts[-1]
             
             if not order_id:
                 return get_cors_response(400, {"error": "Missing orderId in path"})
@@ -482,11 +644,11 @@ def lambda_handler(event, context):
             return view_order(order_id)
         
         # PUT /api/orders/{orderId}/avatars - Update Order Avatars
-        elif http_method == "PUT" and "/avatars" in path:
+        elif http_method == "PUT" and ("/avatars" in route_path or route_path.endswith("/avatars")):
             order_id = path_parameters.get("orderId") or path_parameters.get("orderid")
             if not order_id:
                 # Try to extract from path
-                path_parts = path.split("/")
+                path_parts = route_path.split("/")
                 if len(path_parts) >= 4 and path_parts[-1] == "avatars":
                     order_id = path_parts[-2]
             
@@ -497,7 +659,20 @@ def lambda_handler(event, context):
         
         # Unknown route
         else:
-            return get_cors_response(404, {"error": "Route not found"})
+            # Return debug info in error response to help troubleshoot
+            return get_cors_response(404, {
+                "error": "Route not found",
+                "message": f"No route handler for {http_method} {normalized_path}",
+                "debug": {
+                    "httpMethod": http_method,
+                    "path": path,
+                    "resource": resource_path,
+                    "normalizedPath": normalized_path,
+                    "routePath": route_path,
+                    "pathParameters": path_parameters,
+                    "queryParameters": query_string_parameters
+                }
+            })
     
     except Exception as e:
         print(f"Unhandled error in lambda_handler: {str(e)}")
