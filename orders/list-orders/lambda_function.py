@@ -12,10 +12,12 @@ dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', '
 # Table names
 ORDERS_TABLE_NAME = os.environ.get('ORDERS_TABLE_NAME', 'Orders')
 AVATARS_TABLE_NAME = os.environ.get('AVATARS_TABLE_NAME', 'Avatars')
+REQUESTS_TABLE_NAME = os.environ.get('REQUESTS_TABLE_NAME', 'Requests')
 
 # Initialize tables
 orders_table = dynamodb.Table(ORDERS_TABLE_NAME)
 avatars_table = dynamodb.Table(AVATARS_TABLE_NAME)
+requests_table = dynamodb.Table(REQUESTS_TABLE_NAME)
 
 # CORS headers
 CORS_HEADERS = {
@@ -84,13 +86,44 @@ def get_avatars_by_ids(avatar_ids):
                     "avatarId": avatar["id"],
                     "outputUrl": avatar.get("output_url", ""),
                     "filterId": avatar.get("filter_id", ""),
-                    "creationDate": avatar.get("creation_date", "")
+                    "creationDate": avatar.get("creation_date", ""),
+                    "requestId": avatar.get("request_id", "")
                 })
         
         return result
     except Exception as e:
         print(f"Error fetching avatars: {str(e)}")
         return []
+
+def get_request_photo_urls_by_ids(request_ids):
+    """Batch get request photo_url values by request IDs."""
+    if not request_ids:
+        return {}
+
+    try:
+        request_map = {}
+        for i in range(0, len(request_ids), 100):
+            chunk = request_ids[i:i+100]
+            keys = [{"id": request_id} for request_id in chunk]
+
+            response = dynamodb.batch_get_item(
+                RequestItems={
+                    REQUESTS_TABLE_NAME: {
+                        "Keys": keys
+                    }
+                }
+            )
+
+            items = response.get("Responses", {}).get(REQUESTS_TABLE_NAME, [])
+            for item in items:
+                request_id = item.get("id")
+                if request_id:
+                    request_map[request_id] = item.get("photo_url", "")
+
+        return request_map
+    except Exception as e:
+        print(f"Error fetching request photo URLs: {str(e)}")
+        return {}
 
 def lambda_handler(event, context):
     """List orders for a given date with optional status filter"""
@@ -183,9 +216,24 @@ def lambda_handler(event, context):
                 avatar_ids = [item.get("S", item.get("s", "")) for item in avatar_ids if isinstance(item, dict)]
             
             avatars = get_avatars_by_ids(avatar_ids)
+
+            # Prefer image from Requests.photo_url using Avatars.request_id relationship.
+            request_ids = []
+            for avatar in avatars:
+                request_id = avatar.get("requestId")
+                if request_id and request_id not in request_ids:
+                    request_ids.append(request_id)
+            request_photo_map = get_request_photo_urls_by_ids(request_ids)
+            request_photo_url = ""
+            for request_id in request_ids:
+                request_photo_url = request_photo_map.get(request_id, "")
+                if request_photo_url:
+                    break
             
             order_dict = dict(order)
             order_dict["avatars"] = avatars
+            if request_photo_url:
+                order_dict["imageUrl"] = request_photo_url
             # Convert Decimal objects to int/float for JSON serialization
             order_dict = convert_decimals(order_dict)
             orders.append(order_dict)
