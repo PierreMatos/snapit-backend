@@ -16,6 +16,8 @@ const LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b9
 const LIGHTX_HOST = "api.lightxeditor.com";
 
 export const handler = async (event) => {
+  let orderIdForFailure = null;
+
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event;
 
@@ -23,6 +25,7 @@ export const handler = async (event) => {
     const overlayUrl = body.overlayUrl;
     const orderId = body.orderId;
     const requestId = body.requestId; // Added requestId
+    orderIdForFailure = orderId || null;
 
     if (!originalImageUrl || !overlayUrl || !orderId || !requestId) {
       throw new Error("Missing imageUrl, overlayUrl, orderId, or requestId");
@@ -51,8 +54,14 @@ export const handler = async (event) => {
     }
     console.log(`No existing processed image found for orderId ${orderId}, proceeding with generation.`);
 
-    // Step 1: Resize with LightX (expand-photo)
-    const resizedUrl = await expandWithLightX(originalImageUrl);
+    // Step 1: Resize with LightX (expand-photo).
+    // If LightX resize fails, continue using the original URL instead of aborting.
+    let resizedUrl = originalImageUrl;
+    try {
+      resizedUrl = await expandWithLightX(originalImageUrl);
+    } catch (expandError) {
+      console.warn(`expandWithLightX failed for orderId ${orderId}. Falling back to original image URL.`, expandError);
+    }
 
     // Step 2: Fetch avatar + overlay images
     const [avatarBuffer, overlayBuffer] = await Promise.all([
@@ -69,9 +78,19 @@ export const handler = async (event) => {
       width: 200 // Initial width, will be resized based on the main image
     });
 
-    // Step 3b: Composite overlay onto avatar first
+    // Step 3b: Resize overlay to avatar dimensions before compositing.
+    const avatarMetadata = await sharp(avatarBuffer).metadata();
+    const resizedOverlayBuffer = await sharp(overlayBuffer)
+      .resize({
+        width: avatarMetadata.width,
+        height: avatarMetadata.height,
+        fit: 'fill'
+      })
+      .toBuffer();
+
+    // Composite overlay onto avatar first
     const avatarWithOverlayBuffer = await sharp(avatarBuffer)
-      .composite([{ input: overlayBuffer, top: 0, left: 0 }])
+      .composite([{ input: resizedOverlayBuffer, top: 0, left: 0 }])
       .toBuffer();
 
     // Step 3c: Composite QR code onto the avatar+overlay image
@@ -110,7 +129,7 @@ export const handler = async (event) => {
     const updateItemParams = {
       TableName: avatarsTableName,
       Key: { id: orderId }, // orderId from input corresponds to 'id' in Avatars table
-      UpdateExpression: "set output_url = :url, request_id = :reqId", // also store requestId
+      UpdateExpression: "set output_url = :url, request_id = :reqId, requestId = :reqId", // store both snake_case and camelCase
       ExpressionAttributeValues: {
         ":url": s3Url,
         ":reqId": requestId,
@@ -132,6 +151,9 @@ export const handler = async (event) => {
 
   } catch (error) {
     console.error("Error:", error);
+    if (orderIdForFailure) {
+      await markOverlayFailure(orderIdForFailure, error.message);
+    }
     return {
       statusCode: 500,
       body: JSON.stringify({
@@ -145,6 +167,24 @@ export const handler = async (event) => {
     };
   }
 };
+
+async function markOverlayFailure(orderId, errorMessage) {
+  try {
+    await docClient.send(new UpdateCommand({
+      TableName: avatarsTableName,
+      Key: { id: orderId },
+      UpdateExpression: "set overlay_status = :status, overlay_error = :error",
+      ExpressionAttributeValues: {
+        ":status": "FAILED",
+        ":error": String(errorMessage || "Unknown overlay error")
+      },
+      ReturnValues: "NONE"
+    }));
+    console.log(`Marked overlay failure for orderId ${orderId}`);
+  } catch (updateError) {
+    console.error(`Failed to mark overlay failure for orderId ${orderId}:`, updateError);
+  }
+}
 
 // Resize image using LightX expand-photo
 async function expandWithLightX(imageUrl) {

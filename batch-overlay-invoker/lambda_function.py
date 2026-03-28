@@ -60,18 +60,28 @@ def lambda_handler(event, context):
 
     initiated_count = 0
     failed_to_initiate_count = 0
+    failed_details = []
+    max_invoke_attempts = 3
 
     # --- Process Each Avatar ---
     for avatar in avatars:
         # filterId is now optional for the invoker itself, as it's not passed downstream to /api/print
         # It's still good to receive it from frontend for logging if available.
+        filter_id = avatar.get('filterId', 'unknown-filter')
+        generation_order_id = avatar.get('generationOrderId')
+
         if not all(k in avatar for k in ('imageUrl', 'originalRequestId', 'generationOrderId')):
-            print(f"Warning: Skipping avatar due to missing essential details (imageUrl, originalRequestId, generationOrderId): {avatar.get('filterId', 'Unknown filter')}")
+            print(f"Warning: Skipping avatar due to missing essential details (imageUrl, originalRequestId, generationOrderId): filter={filter_id}, generationOrderId={generation_order_id}")
             failed_to_initiate_count += 1
+            failed_details.append({
+                "generationOrderId": generation_order_id,
+                "filterId": filter_id,
+                "reason": "missing_required_fields"
+            })
             continue
 
         # Use the generationOrderId from the frontend as the orderId for the print lambda
-        order_id_for_print_lambda = avatar['generationOrderId']
+        order_id_for_print_lambda = generation_order_id
 
         # Payload for your existing image-overlay Lambda
         payload_for_print_lambda = {
@@ -88,22 +98,33 @@ def lambda_handler(event, context):
             'Payload': json.dumps(payload_for_print_lambda)
         }
 
-        try:
-            print(f"Attempting to invoke {print_lambda_function_name} for filter {avatar['filterId']} with Order ID {order_id_for_print_lambda}")
-            response = lambda_client.invoke(**invoke_params)
+        invocation_succeeded = False
+        last_error = None
+        for attempt in range(1, max_invoke_attempts + 1):
+            try:
+                print(f"Attempt {attempt}/{max_invoke_attempts}: invoking {print_lambda_function_name} for filter={filter_id}, orderId={order_id_for_print_lambda}")
+                response = lambda_client.invoke(**invoke_params)
 
-            # For 'Event' invocation, a successful request to AWS Lambda returns StatusCode 202.
-            if response.get('StatusCode') == 202:
-                print(f"Successfully initiated async overlay for {avatar['imageUrl']} (Order ID: {order_id_for_print_lambda})")
-                initiated_count += 1
-            else:
-                # This case is less common for 'Event' type if the invocation request itself is malformed
-                # before AWS even accepts it. More often, issues would be within the invoked Lambda.
-                print(f"Failed to initiate async overlay for {avatar['imageUrl']}. AWS StatusCode: {response.get('StatusCode')}, Error: {response.get('FunctionError')}")
-                failed_to_initiate_count += 1
-        except Exception as e:
-            print(f"Error initiating async overlay for {avatar['imageUrl']}: {str(e)}")
+                # For 'Event' invocation, a successful request to AWS Lambda returns StatusCode 202.
+                if response.get('StatusCode') == 202:
+                    print(f"Successfully initiated async overlay for {avatar['imageUrl']} (Order ID: {order_id_for_print_lambda})")
+                    initiated_count += 1
+                    invocation_succeeded = True
+                    break
+
+                last_error = f"AWS StatusCode={response.get('StatusCode')}, FunctionError={response.get('FunctionError')}"
+                print(f"Invoke attempt {attempt} failed for orderId={order_id_for_print_lambda}: {last_error}")
+            except Exception as e:
+                last_error = str(e)
+                print(f"Invoke attempt {attempt} exception for orderId={order_id_for_print_lambda}: {last_error}")
+
+        if not invocation_succeeded:
             failed_to_initiate_count += 1
+            failed_details.append({
+                "generationOrderId": order_id_for_print_lambda,
+                "filterId": filter_id,
+                "reason": last_error or "invoke_failed"
+            })
 
     # --- Prepare Response ---
     response_message = f"Batch overlay processing initiated. Successful initiations: {initiated_count}. Failed initiations: {failed_to_initiate_count}."
@@ -118,6 +139,7 @@ def lambda_handler(event, context):
         'body': json.dumps({
             'message': response_message,
             'initiatedCount': initiated_count,
-            'failedToInitiateCount': failed_to_initiate_count
+            'failedToInitiateCount': failed_to_initiate_count,
+            'failedDetails': failed_details
         })
     }

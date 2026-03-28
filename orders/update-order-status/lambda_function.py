@@ -82,35 +82,34 @@ def lambda_handler(event, context):
         if new_status not in ["active", "paid", "cancelled"]:
             return get_cors_response(400, {"error": "Invalid status. Must be 'active', 'paid', or 'cancelled'"})
         
-        # The table's primary key is "id", but we want to find by "orderId"
-        # First, find the order by scanning for orderId
+        # Accept either internal DB id (UUID) or public order code in path.
         from boto3.dynamodb.conditions import Attr
         
         order = None
         order_primary_key = None
         
-        # Try get_item first (in case there's a GSI)
+        # 1) Try direct primary-key lookup by id first (preferred, fastest).
         try:
-            response = orders_table.get_item(Key={"orderId": order_id})
+            response = orders_table.get_item(Key={"id": order_id})
             if "Item" in response:
                 order = response["Item"]
-                order_primary_key = {"orderId": order_id}
+                order_primary_key = {"id": order_id}
         except Exception as e:
-            # If ValidationException, orderId is not the PK - that's expected
+            # If ValidationException, the table key schema may differ.
             if "ValidationException" not in str(e) and "does not match the schema" not in str(e):
                 raise
         
-        # If not found via get_item, scan for orderId
+        # 2) Fallback lookup by legacy/public fields (orderId or code).
         if not order:
             try:
                 scan_response = orders_table.scan(
-                    FilterExpression=Attr("orderId").eq(order_id)
+                    FilterExpression=Attr("orderId").eq(order_id) | Attr("code").eq(order_id)
                 )
                 items = scan_response.get("Items", [])
                 if not items:
                     return get_cors_response(404, {
                         "error": f"Order {order_id} not found",
-                        "message": f"No order found with orderId: {order_id}"
+                        "message": f"No order found with id/orderId/code: {order_id}"
                     })
                 order = items[0]
                 # Get the primary key (id) from the found order

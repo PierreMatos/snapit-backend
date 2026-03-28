@@ -23,8 +23,51 @@ OVERLAY_URL = os.environ.get('OVERLAY_URL', "https://snapitbucket.s3.eu-central-
 
 # Polling Parameters (Matching LightX Docs)
 MAX_STATUS_RETRIES = 5
-STATUS_RETRY_INTERVAL_SECONDS = 3
+# Polling schedule (wait BEFORE each poll, in ms).
+# No immediate check at t=0; first poll happens after the first delay.
+DEFAULT_STATUS_POLL_DELAYS_MS = "10000,5000,5000,15000"
 # ----------------------------------------------
+
+
+def get_poll_delays_seconds():
+    """Returns normalized polling delays, each applied before a polling attempt."""
+    delays_ms_raw = os.environ.get("STATUS_POLL_DELAYS_MS")
+    if not delays_ms_raw:
+        delays_ms_raw = DEFAULT_STATUS_POLL_DELAYS_MS
+
+    parsed_delays = []
+    expected_attempts = max(MAX_STATUS_RETRIES, 1)
+
+    for token in delays_ms_raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            delay_ms = int(token)
+            if delay_ms < 0:
+                logger.warning(f"Ignoring negative delay value: {delay_ms}ms")
+                continue
+            parsed_delays.append(delay_ms / 1000.0)
+        except ValueError:
+            logger.warning(f"Ignoring invalid delay token in STATUS_POLL_DELAYS_MS: '{token}'")
+
+    if not parsed_delays:
+        logger.warning(
+            "No valid polling delays found. Falling back to DEFAULT_STATUS_POLL_DELAYS_MS."
+        )
+        parsed_delays = [int(token.strip()) / 1000.0 for token in DEFAULT_STATUS_POLL_DELAYS_MS.split(",")]
+
+    # Keep at most MAX_STATUS_RETRIES delays (each delay maps to one polling attempt).
+    if len(parsed_delays) > expected_attempts:
+        logger.warning(
+            f"Received {len(parsed_delays)} polling delays; only first {expected_attempts} will be used."
+        )
+        parsed_delays = parsed_delays[:expected_attempts]
+
+    logger.info(
+        f"Using poll delays (seconds): {parsed_delays} with max retries={MAX_STATUS_RETRIES}"
+    )
+    return parsed_delays
 
 def call_lightx_status_api(order_id):
     """Calls the LightX order status API once."""
@@ -171,12 +214,20 @@ def lambda_handler(event, context):
                 "body": json.dumps({"error": "Missing orderId parameter"})
             }
 
+        poll_delays_seconds = get_poll_delays_seconds()
+        total_attempts = min(MAX_STATUS_RETRIES, len(poll_delays_seconds))
+        max_wait_seconds = sum(poll_delays_seconds[:total_attempts])
+
         original_image_url = None
         final_status = "pending" # Track the final status observed
 
         # --- Polling Loop ---
-        for attempt in range(MAX_STATUS_RETRIES):
-            logger.info(f"Polling attempt {attempt + 1}/{MAX_STATUS_RETRIES} for orderId {order_id}")
+        for attempt in range(total_attempts):
+            delay_seconds = poll_delays_seconds[attempt]
+            logger.debug(f"Waiting {delay_seconds}s before poll attempt {attempt + 1}...")
+            time.sleep(delay_seconds)
+
+            logger.info(f"Polling attempt {attempt + 1}/{total_attempts} for orderId {order_id}")
             status_body, error = call_lightx_status_api(order_id)
 
             if error:
@@ -206,10 +257,6 @@ def lambda_handler(event, context):
                 
                 # else status is likely "pending" or similar, continue polling
 
-            # Wait before the next attempt, but not after the last one
-            if attempt < MAX_STATUS_RETRIES - 1:
-                logger.debug(f"Waiting {STATUS_RETRY_INTERVAL_SECONDS}s before next poll...")
-                time.sleep(STATUS_RETRY_INTERVAL_SECONDS)
         # --- End Polling Loop ---
 
 
@@ -263,13 +310,16 @@ def lambda_handler(event, context):
              }
         else:
              # Polling timed out (reached max retries without active/failed)
-             logger.warning(f"Polling timed out for orderId {order_id} after {MAX_STATUS_RETRIES} attempts.")
+             logger.warning(f"Polling timed out for orderId {order_id} after {total_attempts} attempts.")
              return {
                  "statusCode": 408, # Request Timeout - polling timed out
                  "body": json.dumps({
                      "orderId": order_id,
                      "status": "timeout",
-                     "error": f"Timed out after {MAX_STATUS_RETRIES * STATUS_RETRY_INTERVAL_SECONDS} seconds waiting for image generation to complete."
+                     "error": (
+                         f"Timed out after {total_attempts} polling attempts "
+                         f"(~{max_wait_seconds:.1f}s total wait) waiting for image generation to complete."
+                     )
                  })
              }
 
