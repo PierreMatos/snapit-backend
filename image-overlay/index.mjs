@@ -40,6 +40,17 @@ export const handler = async (event) => {
     const { Item } = await docClient.send(new GetCommand(getItemParams));
 
     if (Item && Item.output_url) {
+      // Ensure request linkage fields exist even on already-processed rows.
+      await docClient.send(new UpdateCommand({
+        TableName: avatarsTableName,
+        Key: { id: orderId },
+        UpdateExpression: "set request_id = :reqId, requestId = :reqId",
+        ExpressionAttributeValues: {
+          ":reqId": requestId
+        },
+        ReturnValues: "NONE"
+      }));
+
       console.log(`Order ID ${orderId} has already been processed. Returning existing URL: ${Item.output_url}`);
       return {
         statusCode: 200,
@@ -70,7 +81,7 @@ export const handler = async (event) => {
     ]);
 
     // Step 3a: Generate QR Code
-    const qrCodeUrl = `https://master.d1m6exe13kof96.amplifyapp.com/avatars/${requestId}`;
+    const qrCodeUrl = `https://www.snapitrabbit.com/avatars/${requestId}`;
     const qrCodeBuffer = await qrcode.toBuffer(qrCodeUrl, {
       errorCorrectionLevel: 'H', // High error correction
       type: 'png',
