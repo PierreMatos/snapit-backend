@@ -3,6 +3,7 @@ import json
 import os
 import boto3
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "eu-central-1"))
 
@@ -44,13 +45,28 @@ def extract_city_id(event):
     return ""
 
 
+def convert_decimals(value):
+    if isinstance(value, Decimal):
+        if value % 1 == 0:
+            return int(value)
+        return float(value)
+    if isinstance(value, dict):
+        return {k: convert_decimals(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [convert_decimals(v) for v in value]
+    return value
+
+
 def parse_price(value, key):
     if value is None:
         raise ValueError(f"Missing {key}")
-    number = float(value)
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        raise ValueError(f"{key} must be a valid number")
     if number < 0:
         raise ValueError(f"{key} must be >= 0")
-    return round(number, 2)
+    return number.quantize(Decimal("0.01"))
 
 
 def lambda_handler(event, context):
@@ -83,6 +99,7 @@ def lambda_handler(event, context):
         updated_at = datetime.now(timezone.utc).isoformat()
 
         item = {
+            "id": city_id,
             "cityId": city_id,
             "price1": price1,
             "price2": price2,
@@ -98,7 +115,7 @@ def lambda_handler(event, context):
             {
                 "success": True,
                 "message": f"Prices updated for cityId={city_id}",
-                "prices": item,
+                "prices": convert_decimals(item),
             },
         )
     except ValueError as exc:

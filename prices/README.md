@@ -10,11 +10,12 @@ This directory contains Lambda functions for managing per-city package prices.
 ## DynamoDB table
 
 - Table name: `Prices` (or your `PRICES_TABLE_NAME` env var)
-- Partition key: `cityId` (String)
+- Partition key: `id` (String)
 - Example item:
 
 ```json
 {
+  "id": "1",
   "cityId": "1",
   "price1": 10,
   "price2": 20,

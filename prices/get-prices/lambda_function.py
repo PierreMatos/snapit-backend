@@ -3,6 +3,7 @@ import json
 import os
 import boto3
 from decimal import Decimal
+from boto3.dynamodb.conditions import Attr
 
 dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "eu-central-1"))
 
@@ -81,11 +82,37 @@ def lambda_handler(event, context):
         if not city_id:
             return get_cors_response(400, {"error": "Missing cityId"})
 
-        response = prices_table.get_item(Key={"cityId": city_id})
-        item = response.get("Item")
+        item = None
+
+        # Try PK=id first (current expected schema).
+        try:
+            response = prices_table.get_item(Key={"id": city_id})
+            item = response.get("Item")
+        except Exception as exc:
+            if "ValidationException" not in str(exc):
+                raise
+
+        # Fallback for legacy schema where PK is cityId.
+        if not item:
+            try:
+                response = prices_table.get_item(Key={"cityId": city_id})
+                item = response.get("Item")
+            except Exception as exc:
+                if "ValidationException" not in str(exc):
+                    raise
+
+        # Final fallback for unexpected table schemas.
+        if not item:
+            scan_response = prices_table.scan(
+                FilterExpression=Attr("id").eq(city_id) | Attr("cityId").eq(city_id),
+                Limit=1
+            )
+            items = scan_response.get("Items", [])
+            if items:
+                item = items[0]
 
         if not item:
-            default_payload = {"cityId": city_id, **DEFAULT_PRICE_CONFIG}
+            default_payload = {"id": city_id, "cityId": city_id, **DEFAULT_PRICE_CONFIG}
             return get_cors_response(200, default_payload)
 
         item = convert_decimals(item)
