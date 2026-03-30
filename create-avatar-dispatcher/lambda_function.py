@@ -19,6 +19,37 @@ filter_table = dynamodb.Table(FILTER_TABLE_NAME)
 request_table = dynamodb.Table(REQUEST_TABLE_NAME)
 avatar_table = dynamodb.Table(AVATAR_TABLE_NAME)   
 
+def extract_jwt_claims(event):
+    """Extract JWT claims for HTTP API v2 and REST API authorizers."""
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+    jwt_claims = (authorizer.get("jwt") or {}).get("claims")
+    if isinstance(jwt_claims, dict):
+        return jwt_claims
+    claims = authorizer.get("claims")
+    if isinstance(claims, dict):
+        return claims
+    return {}
+
+def normalize_groups(raw_groups):
+    if isinstance(raw_groups, list):
+        return [str(g).strip() for g in raw_groups if str(g).strip()]
+    if isinstance(raw_groups, str):
+        return [g.strip() for g in raw_groups.split(",") if g.strip()]
+    return []
+
+def extract_actor(event):
+    claims = extract_jwt_claims(event)
+    groups = normalize_groups(claims.get("cognito:groups") or claims.get("groups"))
+    sub = claims.get("sub") or "unknown"
+    email = claims.get("email") or "unknown"
+    return {
+        "sub": str(sub),
+        "email": str(email),
+        "groups": groups,
+        "display": str(email) if email and email != "unknown" else str(sub)
+    }
+
 def make_downstream_request(tool_url, image_url, gender, city_id, filter_id):
     """Makes a POST request to the specified tool_url."""
     try:
@@ -88,6 +119,7 @@ def make_downstream_request(tool_url, image_url, gender, city_id, filter_id):
 def lambda_handler(event, context):
     try:
         body = json.loads(event.get("body", "{}"))
+        actor = extract_actor(event)
         image_url = body.get("imageUrl")
         gender = body.get("gender")
         city_id = body.get("city_id")
@@ -112,6 +144,11 @@ def lambda_handler(event, context):
                     'city_id': city_id,
                     'photo_url': image_url,
                     'creation_date': creation_timestamp,
+                    'createdBySub': actor["sub"],
+                    'createdByEmail': actor["email"],
+                    'createdByGroups': actor["groups"],
+                    'createdByDisplay': actor["display"],
+                    'createdByAt': creation_timestamp,
                     # 'user_id': user_id,
                     # 'gender': gender 
                 },

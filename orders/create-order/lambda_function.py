@@ -14,11 +14,13 @@ dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', '
 # Table names from environment variables or defaults
 ORDERS_TABLE_NAME = os.environ.get('ORDERS_TABLE_NAME', 'Orders')
 AVATARS_TABLE_NAME = os.environ.get('AVATARS_TABLE_NAME', 'Avatars')
+REQUESTS_TABLE_NAME = os.environ.get('REQUESTS_TABLE_NAME', 'Requests')
 ORDER_COUNTER_TABLE_NAME = os.environ.get('ORDER_COUNTER_TABLE_NAME', 'OrderCounter')
 
 # Initialize tables
 orders_table = dynamodb.Table(ORDERS_TABLE_NAME)
 avatars_table = dynamodb.Table(AVATARS_TABLE_NAME)
+requests_table = dynamodb.Table(REQUESTS_TABLE_NAME)
 order_counter_table = dynamodb.Table(ORDER_COUNTER_TABLE_NAME)
 
 # CORS headers
@@ -55,6 +57,49 @@ def convert_decimals(obj):
     elif isinstance(obj, list):
         return [convert_decimals(item) for item in obj]
     return obj
+
+def extract_jwt_claims(event):
+    """Extract JWT claims for HTTP API v2 and REST API authorizers."""
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+    jwt_claims = (authorizer.get("jwt") or {}).get("claims")
+    if isinstance(jwt_claims, dict):
+        return jwt_claims
+    claims = authorizer.get("claims")
+    if isinstance(claims, dict):
+        return claims
+    return {}
+
+def normalize_groups(raw_groups):
+    if isinstance(raw_groups, list):
+        return [str(g).strip() for g in raw_groups if str(g).strip()]
+    if isinstance(raw_groups, str):
+        return [g.strip() for g in raw_groups.split(",") if g.strip()]
+    return []
+
+def extract_actor(event):
+    claims = extract_jwt_claims(event)
+    return {
+        "sub": str(claims.get("sub") or "unknown"),
+        "email": str(claims.get("email") or "unknown"),
+        "groups": normalize_groups(claims.get("cognito:groups") or claims.get("groups"))
+    }
+
+def get_request_seller(request_id):
+    """Get seller fields from Requests table for propagation into Orders."""
+    if not request_id:
+        return {}
+    try:
+        response = requests_table.get_item(Key={"id": request_id})
+        item = response.get("Item") or {}
+        return {
+            "sellerSub": item.get("createdBySub"),
+            "sellerEmail": item.get("createdByEmail"),
+            "sellerGroups": item.get("createdByGroups"),
+        }
+    except Exception as e:
+        print(f"Error loading request seller for requestId={request_id}: {str(e)}")
+        return {}
 
 def generate_order_id():
     """Generate sequential order ID (A1, A2, A3, etc.) based on today's order count"""
@@ -153,6 +198,7 @@ def lambda_handler(event, context):
             except json.JSONDecodeError:
                 return get_cors_response(400, {"error": "Invalid JSON in request body"})
         
+        actor = extract_actor(event)
         request_id = body.get("requestId")
         city_id = body.get("cityId")
         price = body.get("price")
@@ -180,6 +226,13 @@ def lambda_handler(event, context):
         # Generate unique ID for the order item
         order_item_id = str(uuid.uuid4())
         
+        request_seller = get_request_seller(request_id)
+        seller_sub = request_seller.get("sellerSub") or actor["sub"]
+        seller_email = request_seller.get("sellerEmail") or actor["email"]
+        seller_groups = request_seller.get("sellerGroups")
+        if not isinstance(seller_groups, list):
+            seller_groups = actor["groups"]
+
         # Create order item
         order_item = {
             "id": order_item_id,
@@ -192,7 +245,10 @@ def lambda_handler(event, context):
             "cityId": city_id,
             "requestId": request_id,
             "imageUrl": image_url,
-            "avatarIds": avatar_ids
+            "avatarIds": avatar_ids,
+            "sellerSub": seller_sub,
+            "sellerEmail": seller_email,
+            "sellerGroups": seller_groups
         }
         
         # Save to DynamoDB
