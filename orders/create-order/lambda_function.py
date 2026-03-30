@@ -70,19 +70,11 @@ def extract_jwt_claims(event):
         return claims
     return {}
 
-def normalize_groups(raw_groups):
-    if isinstance(raw_groups, list):
-        return [str(g).strip() for g in raw_groups if str(g).strip()]
-    if isinstance(raw_groups, str):
-        return [g.strip() for g in raw_groups.split(",") if g.strip()]
-    return []
-
 def extract_actor(event):
     claims = extract_jwt_claims(event)
     return {
         "sub": str(claims.get("sub") or "unknown"),
-        "email": str(claims.get("email") or "unknown"),
-        "groups": normalize_groups(claims.get("cognito:groups") or claims.get("groups"))
+        "email": str(claims.get("email") or "unknown")
     }
 
 def get_request_seller(request_id):
@@ -95,7 +87,6 @@ def get_request_seller(request_id):
         return {
             "sellerSub": item.get("createdBySub"),
             "sellerEmail": item.get("createdByEmail"),
-            "sellerGroups": item.get("createdByGroups"),
         }
     except Exception as e:
         print(f"Error loading request seller for requestId={request_id}: {str(e)}")
@@ -229,9 +220,6 @@ def lambda_handler(event, context):
         request_seller = get_request_seller(request_id)
         seller_sub = request_seller.get("sellerSub") or actor["sub"]
         seller_email = request_seller.get("sellerEmail") or actor["email"]
-        seller_groups = request_seller.get("sellerGroups")
-        if not isinstance(seller_groups, list):
-            seller_groups = actor["groups"]
 
         # Create order item
         order_item = {
@@ -247,8 +235,7 @@ def lambda_handler(event, context):
             "imageUrl": image_url,
             "avatarIds": avatar_ids,
             "sellerSub": seller_sub,
-            "sellerEmail": seller_email,
-            "sellerGroups": seller_groups
+            "sellerEmail": seller_email
         }
         
         # Save to DynamoDB

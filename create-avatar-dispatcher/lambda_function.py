@@ -31,23 +31,13 @@ def extract_jwt_claims(event):
         return claims
     return {}
 
-def normalize_groups(raw_groups):
-    if isinstance(raw_groups, list):
-        return [str(g).strip() for g in raw_groups if str(g).strip()]
-    if isinstance(raw_groups, str):
-        return [g.strip() for g in raw_groups.split(",") if g.strip()]
-    return []
-
 def extract_actor(event):
     claims = extract_jwt_claims(event)
-    groups = normalize_groups(claims.get("cognito:groups") or claims.get("groups"))
     sub = claims.get("sub") or "unknown"
     email = claims.get("email") or "unknown"
     return {
         "sub": str(sub),
-        "email": str(email),
-        "groups": groups,
-        "display": str(email) if email and email != "unknown" else str(sub)
+        "email": str(email)
     }
 
 def make_downstream_request(tool_url, image_url, gender, city_id, filter_id):
@@ -146,9 +136,6 @@ def lambda_handler(event, context):
                     'creation_date': creation_timestamp,
                     'createdBySub': actor["sub"],
                     'createdByEmail': actor["email"],
-                    'createdByGroups': actor["groups"],
-                    'createdByDisplay': actor["display"],
-                    'createdByAt': creation_timestamp,
                     # 'user_id': user_id,
                     # 'gender': gender 
                 },
