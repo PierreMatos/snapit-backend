@@ -1,4 +1,5 @@
 """Lambda function: Create Order - POST /api/orders"""
+import base64
 import json
 import os
 import boto3
@@ -68,13 +69,29 @@ def extract_jwt_claims(event):
     claims = authorizer.get("claims")
     if isinstance(claims, dict):
         return claims
+    # Fallback: decode bearer JWT payload when authorizer claims are unavailable.
+    headers = event.get("headers") or {}
+    auth_header = headers.get("authorization") or headers.get("Authorization") or ""
+    if isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        payload = token.split(".")
+        if len(payload) >= 2:
+            try:
+                encoded = payload[1]
+                padded = encoded + "=" * ((4 - len(encoded) % 4) % 4)
+                decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+                parsed = json.loads(decoded)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception as decode_error:
+                print(f"Failed to decode bearer JWT payload: {decode_error}")
     return {}
 
 def extract_actor(event):
     claims = extract_jwt_claims(event)
     return {
-        "sub": str(claims.get("sub") or "unknown"),
-        "email": str(claims.get("email") or "unknown")
+        "sub": str(claims.get("sub") or claims.get("username") or claims.get("cognito:username") or "unknown"),
+        "email": str(claims.get("email") or claims.get("cognito:username") or claims.get("username") or "unknown")
     }
 
 def get_request_seller(request_id):
