@@ -1,0 +1,23 @@
+[
+  {
+    "userSub": "03e438b2-6001-7079-75d2-876c1d7fbfc2",
+    "apiKey": "<LIGHTX_TOKEN_1>",
+    "label": "promoter-francisco",
+    "active": true,
+    "updatedAt": "2026-03-31T12:00:00Z"
+  },
+  {
+    "userSub": "b3944822-f0e1-7017-c5e1-cddf6a202b12",
+    "apiKey": "<LIGHTX_TOKEN_2>",
+    "label": "promoter-2",
+    "active": true,
+    "updatedAt": "2026-03-31T12:00:00Z"
+  },
+  {
+    "userSub": "default",
+    "apiKey": "<LIGHTX_DEFAULT_TOKEN>",
+    "label": "fallback-shared",
+    "active": true,
+    "updatedAt": "2026-03-31T12:00:00Z"
+  }
+]

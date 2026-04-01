@@ -3,6 +3,8 @@ import os
 import http.client
 import time
 import logging
+import base64
+import boto3
 from urllib.parse import urlparse
 
 # Configure logging
@@ -14,7 +16,11 @@ logger.setLevel(logging.INFO)
 LIGHTX_HOST = os.environ.get('LIGHTX_HOST', 'api.lightxeditor.com')
 LIGHTX_STATUS_PATH = os.environ.get('LIGHTX_STATUS_PATH', '/external/api/v1/order-status')
 # IMPORTANT: Store API keys securely (Secrets Manager or Lambda Environment Variables)
-LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3798_andoraitools"
+DEFAULT_LIGHTX_API_KEY = os.environ.get("LIGHTX_API_KEY", "")
+LIGHTX_TOKENS_TABLE = os.environ.get('LIGHTX_TOKENS_TABLE', 'LightxUserTokens')
+REQUEST_TABLE_NAME = os.environ.get('REQUEST_TABLE_NAME', 'Requests')
+AVATAR_TABLE_NAME = os.environ.get('AVATAR_TABLE_NAME', 'Avatars')
+DYNAMODB_REGION = os.environ.get('AWS_REGION', 'eu-central-1')
 
 # Format Image Lambda
 # Ensure this URL is set in your Lambda environment variables
@@ -27,6 +33,98 @@ MAX_STATUS_RETRIES = 5
 # No immediate check at t=0; first poll happens after the first delay.
 DEFAULT_STATUS_POLL_DELAYS_MS = "10000,5000,5000,15000"
 # ----------------------------------------------
+
+dynamodb = boto3.resource('dynamodb', region_name=DYNAMODB_REGION)
+tokens_table = dynamodb.Table(LIGHTX_TOKENS_TABLE)
+requests_table = dynamodb.Table(REQUEST_TABLE_NAME)
+avatars_table = dynamodb.Table(AVATAR_TABLE_NAME)
+
+def extract_jwt_claims(event):
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+    jwt_claims = (authorizer.get("jwt") or {}).get("claims")
+    if isinstance(jwt_claims, dict):
+        return jwt_claims
+    claims = authorizer.get("claims")
+    if isinstance(claims, dict):
+        return claims
+
+    headers = event.get("headers") or {}
+    auth_header = headers.get("authorization") or headers.get("Authorization") or ""
+    if isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        parts = token.split(".")
+        if len(parts) >= 2:
+            try:
+                payload = parts[1]
+                padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+                decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+                parsed = json.loads(decoded)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception as decode_error:
+                logger.warning(f"Failed decoding bearer token payload: {decode_error}")
+    return {}
+
+def get_request_id_by_order_id(order_id):
+    if not order_id:
+        return None
+    try:
+        response = avatars_table.get_item(Key={"id": order_id})
+        item = response.get("Item") or {}
+        return item.get("requestId") or item.get("request_id")
+    except Exception as e:
+        logger.warning(f"Unable to load avatar row for orderId={order_id}: {e}")
+        return None
+
+def get_user_sub_by_request_id(request_id):
+    if not request_id:
+        return None
+    try:
+        response = requests_table.get_item(Key={"id": request_id})
+        item = response.get("Item") or {}
+        return item.get("createdBySub")
+    except Exception as e:
+        logger.warning(f"Unable to load request row for requestId={request_id}: {e}")
+        return None
+
+def get_lightx_token_for_user_sub(user_sub):
+    def _read_token_with_pk(pk_name, key_value):
+        if not key_value:
+            return None
+        try:
+            response = tokens_table.get_item(Key={pk_name: key_value})
+            item = response.get("Item") or {}
+            if not item:
+                return None
+            if item.get("active") is False:
+                return None
+            token = item.get("apiKey")
+            if isinstance(token, str) and token.strip():
+                return token.strip()
+            return None
+        except Exception as e:
+            logger.warning(f"Failed reading token mapping for {pk_name}={key_value}: {e}")
+            return None
+
+    def _read_token_any_pk(key_value):
+        # Support both token table PK styles: id and userSub.
+        return _read_token_with_pk("id", key_value) or _read_token_with_pk("userSub", key_value)
+
+    return _read_token_any_pk(user_sub) or _read_token_any_pk("default") or DEFAULT_LIGHTX_API_KEY or None
+
+def resolve_lightx_api_key(event, request_id=None, order_id=None):
+    claims = extract_jwt_claims(event or {})
+    user_sub = claims.get("sub") or claims.get("username") or claims.get("cognito:username")
+    resolved_request_id = request_id or get_request_id_by_order_id(order_id)
+    if not user_sub:
+        user_sub = get_user_sub_by_request_id(resolved_request_id)
+
+    token = get_lightx_token_for_user_sub(user_sub)
+    if token:
+        masked_sub = f"{str(user_sub)[:8]}..." if user_sub else "default"
+        logger.info(f"Resolved LightX token mapping for userSub={masked_sub}")
+    return token
 
 
 def get_poll_delays_seconds():
@@ -69,10 +167,10 @@ def get_poll_delays_seconds():
     )
     return parsed_delays
 
-def call_lightx_status_api(order_id):
+def call_lightx_status_api(order_id, lightx_api_key):
     """Calls the LightX order status API once."""
     conn = None
-    if not LIGHTX_API_KEY:
+    if not lightx_api_key:
         logger.error("LightX API Key is not configured.")
         return None, "API key configuration error."
 
@@ -80,7 +178,7 @@ def call_lightx_status_api(order_id):
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "x-api-key": LIGHTX_API_KEY
+            "x-api-key": lightx_api_key
         }
         payload = json.dumps({"orderId": order_id})
 
@@ -125,7 +223,7 @@ def call_lightx_status_api(order_id):
             conn.close()
 
 
-def call_format_image_lambda(image_url, order_id):
+def call_format_image_lambda(image_url, order_id, request_id=None):
     """Calls the format-image Lambda function."""
     conn = None
     if not FORMAT_IMAGE_LAMBDA_URL:
@@ -135,6 +233,8 @@ def call_format_image_lambda(image_url, order_id):
     try:
         parsed_url = urlparse(FORMAT_IMAGE_LAMBDA_URL)
         payload_dict = {"imageUrl": image_url, "orderId": order_id}
+        if request_id:
+            payload_dict["requestId"] = request_id
         # Only include overlayUrl if it's defined and not empty
         if OVERLAY_URL: 
             payload_dict["overlayUrl"] = OVERLAY_URL
@@ -206,12 +306,21 @@ def lambda_handler(event, context):
             body = json.loads(event.get("body", "{}"))
 
         order_id = body.get("orderId")
+        request_id = body.get("requestId")
 
         if not order_id:
             logger.warning("Missing orderId parameter in request body.")
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "Missing orderId parameter"})
+            }
+
+        resolved_request_id = request_id or get_request_id_by_order_id(order_id)
+        lightx_api_key = resolve_lightx_api_key(event, request_id=resolved_request_id, order_id=order_id)
+        if not lightx_api_key:
+            return {
+                "statusCode": 503,
+                "body": json.dumps({"error": "No LightX API token configured for this user"})
             }
 
         poll_delays_seconds = get_poll_delays_seconds()
@@ -228,7 +337,7 @@ def lambda_handler(event, context):
             time.sleep(delay_seconds)
 
             logger.info(f"Polling attempt {attempt + 1}/{total_attempts} for orderId {order_id}")
-            status_body, error = call_lightx_status_api(order_id)
+            status_body, error = call_lightx_status_api(order_id, lightx_api_key)
 
             if error:
                 # Log the error but continue polling unless it's a fatal config error
@@ -263,7 +372,7 @@ def lambda_handler(event, context):
         # --- Process Polling Results ---
         if final_status == "active" and original_image_url:
             # Step 2: Call format-image Lambda
-            formatted_image_url, format_error = call_format_image_lambda(original_image_url, order_id)
+            formatted_image_url, format_error = call_format_image_lambda(original_image_url, order_id, resolved_request_id)
 
             if format_error:
                  # Failed to format, return error but include original URL maybe?

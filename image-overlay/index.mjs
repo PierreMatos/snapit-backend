@@ -10,10 +10,12 @@ import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-
 const s3 = new S3Client({ region: 'eu-central-1' });
 const dynamoDBClient = new DynamoDBClient({ region: 'eu-central-1' });
 const docClient = DynamoDBDocumentClient.from(dynamoDBClient);
-const avatarsTableName = 'Avatars'; // Define Avatars table name
+const avatarsTableName = process.env.AVATAR_TABLE_NAME || 'Avatars';
+const requestsTableName = process.env.REQUEST_TABLE_NAME || 'Requests';
+const lightxTokensTableName = process.env.LIGHTX_TOKENS_TABLE || 'LightxUserTokens';
 
-const LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3798_andoraitools";
 const LIGHTX_HOST = "api.lightxeditor.com";
+const DEFAULT_LIGHTX_API_KEY = process.env.LIGHTX_API_KEY || "";
 
 export const handler = async (event) => {
   let orderIdForFailure = null;
@@ -29,6 +31,10 @@ export const handler = async (event) => {
 
     if (!originalImageUrl || !overlayUrl || !orderId || !requestId) {
       throw new Error("Missing imageUrl, overlayUrl, orderId, or requestId");
+    }
+    const lightxApiKey = await resolveLightxApiKey(event, requestId);
+    if (!lightxApiKey) {
+      throw new Error("No LightX API token configured for this user");
     }
 
     // Check if orderId already exists in Avatars table (as 'id')
@@ -69,7 +75,7 @@ export const handler = async (event) => {
     // If LightX resize fails, continue using the original URL instead of aborting.
     let resizedUrl = originalImageUrl;
     try {
-      resizedUrl = await expandWithLightX(originalImageUrl);
+      resizedUrl = await expandWithLightX(originalImageUrl, lightxApiKey);
     } catch (expandError) {
       console.warn(`expandWithLightX failed for orderId ${orderId}. Falling back to original image URL.`, expandError);
     }
@@ -197,8 +203,90 @@ async function markOverlayFailure(orderId, errorMessage) {
   }
 }
 
+function decodeJwtPayload(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length < 2) return null;
+    const payload = parts[1];
+    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    const decoded = Buffer.from(padded, "base64url").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractClaims(event) {
+  const requestContext = event?.requestContext || {};
+  const authorizer = requestContext.authorizer || {};
+  const jwtClaims = authorizer?.jwt?.claims;
+  if (jwtClaims && typeof jwtClaims === "object") return jwtClaims;
+  const claims = authorizer?.claims;
+  if (claims && typeof claims === "object") return claims;
+
+  const headers = event?.headers || {};
+  const authHeader = headers.authorization || headers.Authorization || "";
+  if (typeof authHeader === "string" && authHeader.toLowerCase().startsWith("bearer ")) {
+    return decodeJwtPayload(authHeader.split(" ", 2)[1]) || {};
+  }
+  return {};
+}
+
+async function getUserSubFromRequestId(requestId) {
+  if (!requestId) return null;
+  try {
+    const response = await docClient.send(new GetCommand({
+      TableName: requestsTableName,
+      Key: { id: requestId }
+    }));
+    return response?.Item?.createdBySub || null;
+  } catch (e) {
+    console.warn(`Failed loading request ${requestId}:`, e);
+    return null;
+  }
+}
+
+async function getLightxTokenForUserSub(userSub) {
+  const readTokenWithPk = async (pkName, key) => {
+    if (!key) return null;
+    try {
+      const response = await docClient.send(new GetCommand({
+        TableName: lightxTokensTableName,
+        Key: { [pkName]: key }
+      }));
+      const item = response?.Item;
+      if (!item || item.active === false) return null;
+      const token = item.apiKey;
+      return (typeof token === "string" && token.trim()) ? token.trim() : null;
+    } catch (e) {
+      console.warn(`Failed loading token mapping for ${pkName}=${key}:`, e);
+      return null;
+    }
+  };
+
+  const readTokenAnyPk = async (key) =>
+    (await readTokenWithPk("id", key)) || (await readTokenWithPk("userSub", key));
+
+  return (await readTokenAnyPk(userSub)) || (await readTokenAnyPk("default")) || DEFAULT_LIGHTX_API_KEY || null;
+}
+
+async function resolveLightxApiKey(event, requestId) {
+  const claims = extractClaims(event || {});
+  let userSub = claims.sub || claims.username || claims["cognito:username"] || null;
+  if (!userSub) {
+    userSub = await getUserSubFromRequestId(requestId);
+  }
+  const token = await getLightxTokenForUserSub(userSub);
+  if (token) {
+    const maskedSub = userSub ? `${String(userSub).slice(0, 8)}...` : "default";
+    console.log(`Resolved LightX token mapping for userSub=${maskedSub}`);
+  }
+  return token;
+}
+
 // Resize image using LightX expand-photo
-async function expandWithLightX(imageUrl) {
+async function expandWithLightX(imageUrl, lightxApiKey) {
   const expandPayload = JSON.stringify({
     imageUrl,
     leftPadding: -12,
@@ -207,14 +295,14 @@ async function expandWithLightX(imageUrl) {
     bottomPadding: 238
   });
 
-  const expandResponse = await httpPost(LIGHTX_HOST, '/external/api/v1/expand-photo', expandPayload);
+  const expandResponse = await httpPost(LIGHTX_HOST, '/external/api/v1/expand-photo', expandPayload, lightxApiKey);
   const orderId = expandResponse.body.orderId;
 
   // Poll for result (max 5 tries)
   for (let attempt = 0; attempt < 5; attempt++) {
     await sleep(5000); // 15s delay
     const statusPayload = JSON.stringify({ "orderId": orderId });
-    const statusResponse = await httpPost(LIGHTX_HOST, '/external/api/v1/order-status', statusPayload);
+    const statusResponse = await httpPost(LIGHTX_HOST, '/external/api/v1/order-status', statusPayload, lightxApiKey);
     const outputUrl = statusResponse.body?.output;
     if (outputUrl) return outputUrl;
   }
@@ -223,7 +311,7 @@ async function expandWithLightX(imageUrl) {
 }
 
 // Make POST request to LightX
-function httpPost(host, path, payload) {
+function httpPost(host, path, payload, lightxApiKey) {
   return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: host,
@@ -231,7 +319,7 @@ function httpPost(host, path, payload) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': LIGHTX_API_KEY,
+        'x-api-key': lightxApiKey,
         'Content-Length': Buffer.byteLength(payload),
       }
     }, res => {

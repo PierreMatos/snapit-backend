@@ -57,7 +57,7 @@ def extract_actor(event):
         "email": str(email)
     }
 
-def make_downstream_request(tool_url, image_url, gender, city_id, filter_id):
+def make_downstream_request(tool_url, image_url, gender, city_id, filter_id, request_id):
     """Makes a POST request to the specified tool_url."""
     try:
         parsed_url = urlparse(tool_url)
@@ -66,7 +66,8 @@ def make_downstream_request(tool_url, image_url, gender, city_id, filter_id):
             "imageUrl": image_url,
             "gender": gender,
             "city_id": city_id,
-            "filterId": filter_id
+            "filterId": filter_id,
+            "requestId": request_id
         })
 
         conn = http.client.HTTPSConnection(parsed_url.hostname)
@@ -210,7 +211,7 @@ def lambda_handler(event, context):
             }
 
         # Call the selected downstream Lambda function
-        order_id, error = make_downstream_request(tool_url, image_url, gender, city_id, filter_id)
+        order_id, error = make_downstream_request(tool_url, image_url, gender, city_id, filter_id, request_id)
 
         if error or not order_id:
             # If make_downstream_request returns an error OR fails to return an order_id
