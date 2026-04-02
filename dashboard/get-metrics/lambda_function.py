@@ -7,7 +7,6 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import boto3
-from boto3.dynamodb.conditions import Attr
 
 
 dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "eu-central-1"))
@@ -174,7 +173,9 @@ def lambda_handler(event, context):
         overall = init_metrics()
         daily = init_metrics()
         user_overall = init_metrics()
+        user_daily = init_metrics()
         per_user = {}
+        per_user_daily = {}
 
         for req in all_requests:
             req_dt = parse_iso_or_none(req.get("creation_date"))
@@ -195,15 +196,27 @@ def lambda_handler(event, context):
                     "sales": 0,
                     "revenue": 0.0,
                 }
+            if user_key not in per_user_daily:
+                per_user_daily[user_key] = {
+                    "sub": str(req_sub),
+                    "email": str(req_email),
+                    "photosTaken": 0,
+                    "orders": 0,
+                    "sales": 0,
+                    "revenue": 0.0,
+                }
 
             add_request_metric(overall)
             per_user[user_key]["photosTaken"] += 1
 
             if today_start <= req_dt < today_end:
                 add_request_metric(daily)
+                per_user_daily[user_key]["photosTaken"] += 1
 
             if str(req_sub) == str(user_sub):
                 add_request_metric(user_overall)
+                if today_start <= req_dt < today_end:
+                    add_request_metric(user_daily)
 
         for order in all_orders:
             order_dt = parse_order_lisbon_dt(order)
@@ -226,19 +239,33 @@ def lambda_handler(event, context):
                     "sales": 0,
                     "revenue": 0.0,
                 }
+            if user_key not in per_user_daily:
+                per_user_daily[user_key] = {
+                    "sub": str(seller_sub),
+                    "email": str(seller_email),
+                    "photosTaken": 0,
+                    "orders": 0,
+                    "sales": 0,
+                    "revenue": 0.0,
+                }
 
             add_order_metric(overall, status, price)
             add_order_metric(per_user[user_key], status, price)
 
             if today_start <= order_dt < today_end:
                 add_order_metric(daily, status, price)
+                add_order_metric(per_user_daily[user_key], status, price)
 
             if str(seller_sub) == str(user_sub):
                 add_order_metric(user_overall, status, price)
+                if today_start <= order_dt < today_end:
+                    add_order_metric(user_daily, status, price)
 
-        for value in (overall, daily, user_overall):
+        for value in (overall, daily, user_overall, user_daily):
             value["revenue"] = round(value["revenue"], 2)
         for item in per_user.values():
+            item["revenue"] = round(item["revenue"], 2)
+        for item in per_user_daily.values():
             item["revenue"] = round(item["revenue"], 2)
 
         response = {
@@ -247,11 +274,13 @@ def lambda_handler(event, context):
             "rangeEnd": now_lisbon.isoformat(),
             "roleScope": "admin" if is_admin else "self",
             "overall": overall if is_admin else user_overall,
+            "daily": daily if is_admin else user_daily,
         }
 
         if is_admin:
             response["daily"] = daily
             response["perUser"] = list(per_user.values())
+            response["perUserDaily"] = list(per_user_daily.values())
         else:
             response["currentUser"] = {
                 "sub": str(user_sub),

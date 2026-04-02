@@ -75,12 +75,25 @@ def lambda_handler(event, context):
                 return get_cors_response(400, {"error": "Invalid JSON in request body"})
         
         new_status = body.get("status")
-        
-        if not new_status:
-            return get_cors_response(400, {"error": "Missing status"})
-        
-        if new_status not in ["active", "paid", "cancelled"]:
+        new_price = body.get("price", None)
+
+        status_provided = new_status is not None
+        price_provided = new_price is not None
+
+        if not status_provided and not price_provided:
+            return get_cors_response(400, {"error": "Missing status or price"})
+
+        if status_provided and new_status not in ["active", "paid", "cancelled"]:
             return get_cors_response(400, {"error": "Invalid status. Must be 'active', 'paid', or 'cancelled'"})
+
+        parsed_price = None
+        if price_provided:
+            try:
+                parsed_price = Decimal(str(new_price))
+                if parsed_price < 0:
+                    return get_cors_response(400, {"error": "Invalid price. Must be >= 0"})
+            except Exception:
+                return get_cors_response(400, {"error": "Invalid price. Must be a numeric value"})
         
         # Accept either internal DB id (UUID) or public order code in path.
         from boto3.dynamodb.conditions import Attr
@@ -125,19 +138,31 @@ def lambda_handler(event, context):
         current_status = order.get("status")
         
         # Prepare update expression
-        update_expr = "SET #status = :status"
-        expr_names = {"#status": "status"}
-        expr_values = {":status": new_status}
+        update_parts = []
+        expr_names = {}
+        expr_values = {}
+
+        if status_provided:
+            update_parts.append("#status = :status")
+            expr_names["#status"] = "status"
+            expr_values[":status"] = new_status
+
+        if price_provided:
+            update_parts.append("#price = :price")
+            expr_names["#price"] = "price"
+            expr_values[":price"] = parsed_price
         
         # Handle paidTimestamp
-        if new_status == "paid":
+        if status_provided and new_status == "paid":
             paid_timestamp = datetime.now(timezone.utc).isoformat()
-            update_expr += ", paidTimestamp = :paidTimestamp"
+            update_parts.append("paidTimestamp = :paidTimestamp")
             expr_values[":paidTimestamp"] = paid_timestamp
-        elif current_status == "paid" and new_status != "paid":
+        elif status_provided and current_status == "paid" and new_status != "paid":
             # Changing from paid to something else, clear paidTimestamp
-            update_expr += ", paidTimestamp = :null"
+            update_parts.append("paidTimestamp = :null")
             expr_values[":null"] = None
+
+        update_expr = "SET " + ", ".join(update_parts)
         
         # Update the order using the primary key (id)
         updated_response = orders_table.update_item(
@@ -153,10 +178,7 @@ def lambda_handler(event, context):
         # Convert Decimal objects to int/float for JSON serialization
         updated_order = convert_decimals(updated_order)
         
-        return get_cors_response(200, {
-            "success": True,
-            "order": updated_order
-        })
+        return get_cors_response(200, {"success": True, "order": updated_order})
         
     except ClientError as e:
         if e.response['Error']['Code'] == 'ResourceNotFoundException':

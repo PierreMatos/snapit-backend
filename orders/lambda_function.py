@@ -3,6 +3,7 @@ import os
 import boto3
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError
 
@@ -43,6 +44,18 @@ def handle_options():
         "headers": CORS_HEADERS,
         "body": ""
     }
+
+def convert_decimals(obj):
+    """Recursively convert Decimal objects for JSON serialization"""
+    if isinstance(obj, Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_decimals(i) for i in obj]
+    return obj
 
 def generate_order_id():
     """Generate sequential order ID (A1, A2, A3, etc.) using counter table"""
@@ -271,12 +284,25 @@ def update_order_status(order_id, body):
     """Update order status"""
     try:
         new_status = body.get("status")
-        
-        if not new_status:
-            return get_cors_response(400, {"error": "Missing status"})
-        
-        if new_status not in ["active", "paid", "cancelled"]:
+        new_price = body.get("price", None)
+
+        status_provided = new_status is not None
+        price_provided = new_price is not None
+
+        if not status_provided and not price_provided:
+            return get_cors_response(400, {"error": "Missing status or price"})
+
+        if status_provided and new_status not in ["active", "paid", "cancelled"]:
             return get_cors_response(400, {"error": "Invalid status. Must be 'active', 'paid', or 'cancelled'"})
+
+        parsed_price = None
+        if price_provided:
+            try:
+                parsed_price = Decimal(str(new_price))
+                if parsed_price < 0:
+                    return get_cors_response(400, {"error": "Invalid price. Must be >= 0"})
+            except Exception:
+                return get_cors_response(400, {"error": "Invalid price. Must be a numeric value"})
         
         # Get the current order (orderId is the primary key)
         response = orders_table.get_item(Key={"orderId": order_id})
@@ -288,19 +314,31 @@ def update_order_status(order_id, body):
         current_status = order.get("status")
         
         # Prepare update expression
-        update_expr = "SET #status = :status"
-        expr_names = {"#status": "status"}
-        expr_values = {":status": new_status}
+        update_parts = []
+        expr_names = {}
+        expr_values = {}
+
+        if status_provided:
+            update_parts.append("#status = :status")
+            expr_names["#status"] = "status"
+            expr_values[":status"] = new_status
+
+        if price_provided:
+            update_parts.append("#price = :price")
+            expr_names["#price"] = "price"
+            expr_values[":price"] = parsed_price
         
         # Handle paidTimestamp
-        if new_status == "paid":
+        if status_provided and new_status == "paid":
             paid_timestamp = datetime.now(timezone.utc).isoformat()
-            update_expr += ", paidTimestamp = :paidTimestamp"
+            update_parts.append("paidTimestamp = :paidTimestamp")
             expr_values[":paidTimestamp"] = paid_timestamp
-        elif current_status == "paid" and new_status != "paid":
+        elif status_provided and current_status == "paid" and new_status != "paid":
             # Changing from paid to something else, clear paidTimestamp
-            update_expr += ", paidTimestamp = :null"
+            update_parts.append("paidTimestamp = :null")
             expr_values[":null"] = None
+
+        update_expr = "SET " + ", ".join(update_parts)
         
         # Update the order
         updated_response = orders_table.update_item(
@@ -311,7 +349,7 @@ def update_order_status(order_id, body):
             ReturnValues="ALL_NEW"
         )
         
-        updated_order = updated_response.get("Attributes")
+        updated_order = convert_decimals(updated_response.get("Attributes"))
         
         return get_cors_response(200, {
             "success": True,
