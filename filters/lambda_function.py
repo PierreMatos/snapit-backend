@@ -12,7 +12,7 @@ dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "
 FILTERS_TABLE_NAME = os.environ.get("FILTERS_TABLE_NAME", "Filters")
 filters_table = dynamodb.Table(FILTERS_TABLE_NAME)
 
-DEFAULT_CITY_ID = 0
+DEFAULT_CITY_ID = "0"
 DEFAULT_TOOL = "single-avatar-generation"
 DEFAULT_TOOL_URL = "https://fz7v4pd43xjhvwe3xfvqpbk3le0ozggd.lambda-url.eu-central-1.on.aws/"
 
