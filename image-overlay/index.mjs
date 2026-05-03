@@ -25,6 +25,7 @@ export const handler = async (event) => {
     const overlayUrl = body.overlayUrl;
     const orderId = body.orderId;
     const requestId = body.requestId; // Added requestId
+    const printVariant = String(body.printVariant || "default").toLowerCase();
     orderIdForFailure = orderId || null;
 
     if (!originalImageUrl || !overlayUrl || !orderId || !requestId) {
@@ -39,7 +40,8 @@ export const handler = async (event) => {
     console.log(`Checking for existing processed image for orderId (id): ${orderId}`);
     const { Item } = await docClient.send(new GetCommand(getItemParams));
 
-    if (Item && Item.output_url) {
+    const existingOutputUrl = printVariant === "big" ? Item?.output_url_big : Item?.output_url;
+    if (existingOutputUrl) {
       // Ensure request linkage fields exist even on already-processed rows.
       await docClient.send(new UpdateCommand({
         TableName: avatarsTableName,
@@ -51,11 +53,11 @@ export const handler = async (event) => {
         ReturnValues: "NONE"
       }));
 
-      console.log(`Order ID ${orderId} has already been processed. Returning existing URL: ${Item.output_url}`);
+      console.log(`Order ID ${orderId} has already been processed for variant ${printVariant}. Returning existing URL: ${existingOutputUrl}`);
       return {
         statusCode: 200,
         body: JSON.stringify({
-          finalImageUrl: Item.output_url, // Return existing URL
+          finalImageUrl: existingOutputUrl, // Return existing URL
         }),
         headers: {
             "Content-Type": "application/json",
@@ -69,7 +71,7 @@ export const handler = async (event) => {
     // If LightX resize fails, continue using the original URL instead of aborting.
     let resizedUrl = originalImageUrl;
     try {
-      resizedUrl = await expandWithLightX(originalImageUrl);
+      resizedUrl = await expandWithLightX(originalImageUrl, body);
     } catch (expandError) {
       console.warn(`expandWithLightX failed for orderId ${orderId}. Falling back to original image URL.`, expandError);
     }
@@ -123,8 +125,11 @@ export const handler = async (event) => {
 
     // Step 4: Upload to S3
     const bucketName = 'snapitbucket';
-    const key = `prints/${orderId}.jpg`; // Updated S3 key
-    const printFilename = `snapit_print_${orderId}.jpg`; // Desired filename for download
+    const isBigVariant = printVariant === "big";
+    const key = isBigVariant ? `prints/${orderId}_big.jpg` : `prints/${orderId}.jpg`;
+    const printFilename = isBigVariant
+      ? `snapit_big_print_${orderId}.jpg`
+      : `snapit_print_${orderId}.jpg`;
 
     await s3.send(new PutObjectCommand({
       Bucket: bucketName,
@@ -140,7 +145,9 @@ export const handler = async (event) => {
     const updateItemParams = {
       TableName: avatarsTableName,
       Key: { id: orderId }, // orderId from input corresponds to 'id' in Avatars table
-      UpdateExpression: "set output_url = :url, request_id = :reqId, requestId = :reqId", // store both snake_case and camelCase
+      UpdateExpression: isBigVariant
+        ? "set output_url_big = :url, request_id = :reqId, requestId = :reqId"
+        : "set output_url = :url, request_id = :reqId, requestId = :reqId",
       ExpressionAttributeValues: {
         ":url": s3Url,
         ":reqId": requestId,
@@ -198,13 +205,19 @@ async function markOverlayFailure(orderId, errorMessage) {
 }
 
 // Resize image using LightX expand-photo
-async function expandWithLightX(imageUrl) {
+async function expandWithLightX(imageUrl, body = {}) {
+  const expandProfile = String(body.expandProfile || "default").toLowerCase();
+  const defaultPaddings =
+    expandProfile === "big"
+      ? { leftPadding: 0, rightPadding: 0, topPadding: 128, bottomPadding: 128 }
+      : { leftPadding: -12, rightPadding: -12, topPadding: 238, bottomPadding: 238 };
+
   const expandPayload = JSON.stringify({
     imageUrl,
-    leftPadding: -12,
-    rightPadding: -12,
-    topPadding: 238,
-    bottomPadding: 238
+    leftPadding: body.leftPadding ?? defaultPaddings.leftPadding,
+    rightPadding: body.rightPadding ?? defaultPaddings.rightPadding,
+    topPadding: body.topPadding ?? defaultPaddings.topPadding,
+    bottomPadding: body.bottomPadding ?? defaultPaddings.bottomPadding
   });
 
   const expandResponse = await httpPost(LIGHTX_HOST, '/external/api/v1/expand-photo', expandPayload);
