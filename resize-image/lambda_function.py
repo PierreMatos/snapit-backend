@@ -17,6 +17,11 @@ def lambda_handler(event, context):
         # 1. Get image URL from event (from check-order-status result)
         body = json.loads(event.get("body", "{}"))
         image_url = body.get("imageUrl")
+        expand_profile = str(body.get("expandProfile") or "default").strip().lower()
+        left_padding = body.get("leftPadding")
+        right_padding = body.get("rightPadding")
+        top_padding = body.get("topPadding")
+        bottom_padding = body.get("bottomPadding")
         #image_url = "https://d3aa3s3yhl0emm.cloudfront.net/output/lx/avatarify/583a8bf73bb943ab84b1fbad5b2496ba_1024x1024.jpg"
 
         if not image_url:
@@ -28,13 +33,36 @@ def lambda_handler(event, context):
             "x-api-key": LIGHTX_API_KEY
         }
 
+        if expand_profile == "big":
+            default_paddings = {
+                "leftPadding": 0,
+                "rightPadding": 0,
+                "topPadding": 128,
+                "bottomPadding": 128,
+            }
+        else:
+            default_paddings = {
+                "leftPadding": -12,
+                "rightPadding": -12,
+                "topPadding": 238,
+                "bottomPadding": 238,
+            }
+
+        # Allow explicit padding overrides when provided.
+        resolved_paddings = {
+            "leftPadding": left_padding if left_padding is not None else default_paddings["leftPadding"],
+            "rightPadding": right_padding if right_padding is not None else default_paddings["rightPadding"],
+            "topPadding": top_padding if top_padding is not None else default_paddings["topPadding"],
+            "bottomPadding": bottom_padding if bottom_padding is not None else default_paddings["bottomPadding"],
+        }
+
         # 6. Call expand-photo endpoint
         expand_payload = json.dumps({
             "imageUrl": image_url,
-            "leftPadding": -12,
-            "rightPadding": -12,
-            "topPadding": 238,   # expand vertically to get portrait 10x15cm
-            "bottomPadding": 238
+            "leftPadding": resolved_paddings["leftPadding"],
+            "rightPadding": resolved_paddings["rightPadding"],
+            "topPadding": resolved_paddings["topPadding"],
+            "bottomPadding": resolved_paddings["bottomPadding"]
         })
 
         conn = http.client.HTTPSConnection(LIGHTX_HOST)

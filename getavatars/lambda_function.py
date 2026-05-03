@@ -2,6 +2,7 @@ import json
 import boto3
 import os
 import re
+from boto3.dynamodb.conditions import Attr
 
 # Initialize DynamoDB client
 # It's good practice to initialize outside the handler for potential reuse
@@ -73,13 +74,55 @@ def normalize_avatar_ids(raw_avatar_ids):
     return [str(raw_avatar_ids).strip()] if str(raw_avatar_ids).strip() else []
 
 
+def scan_all_items(dynamo_table, **scan_kwargs):
+    """Read all pages for a DynamoDB scan call."""
+    items = []
+    response = dynamo_table.scan(**scan_kwargs)
+    items.extend(response.get("Items", []))
+
+    while response.get("LastEvaluatedKey"):
+        response = dynamo_table.scan(
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+            **scan_kwargs
+        )
+        items.extend(response.get("Items", []))
+
+    return items
+
+
+def batch_get_all_avatar_items(avatar_ids):
+    """Batch-get avatars and retry unprocessed keys until exhausted."""
+    if not avatar_ids:
+        return []
+
+    pending_keys = [{"id": avatar_id} for avatar_id in avatar_ids]
+    collected = []
+
+    while pending_keys:
+        response = dynamodb.batch_get_item(
+            RequestItems={
+                AVATARS_TABLE_NAME: {
+                    "Keys": pending_keys
+                }
+            }
+        )
+        collected.extend(response.get("Responses", {}).get(AVATARS_TABLE_NAME, []))
+        pending_keys = (
+            response.get("UnprocessedKeys", {})
+            .get(AVATARS_TABLE_NAME, {})
+            .get("Keys", [])
+        )
+
+    return collected
+
+
 def get_avatar_items_from_orders(request_id: str):
     """Fallback: fetch avatar items via Orders.requestId -> Orders.avatarIds -> Avatars.id."""
     try:
-        order_scan = orders_table.scan(
-            FilterExpression=boto3.dynamodb.conditions.Attr('requestId').eq(request_id)
+        orders = scan_all_items(
+            orders_table,
+            FilterExpression=Attr('requestId').eq(request_id)
         )
-        orders = order_scan.get("Items", [])
         if not orders:
             return []
 
@@ -92,14 +135,9 @@ def get_avatar_items_from_orders(request_id: str):
         if not avatar_ids:
             return []
 
-        response = dynamodb.batch_get_item(
-            RequestItems={
-                AVATARS_TABLE_NAME: {
-                    "Keys": [{"id": avatar_id} for avatar_id in avatar_ids]
-                }
-            }
-        )
-        return response.get("Responses", {}).get(AVATARS_TABLE_NAME, [])
+        avatar_items = batch_get_all_avatar_items(avatar_ids)
+        by_id = {item.get("id"): item for item in avatar_items if item.get("id")}
+        return [by_id[avatar_id] for avatar_id in avatar_ids if avatar_id in by_id]
     except Exception as exc:
         print(f"Warning: fallback fetch via Orders failed for {request_id}: {exc}")
         return []
@@ -142,11 +180,11 @@ def lambda_handler(event, context):
     try:
         request_metadata = get_request_metadata(request_id_value)
 
-        # Using scan as per previous change. Consider GSI for performance with large tables.
-        response = table.scan(
-            FilterExpression=boto3.dynamodb.conditions.Attr('request_id').eq(request_id_value)
+        raw_items = scan_all_items(
+            table,
+            FilterExpression=Attr('request_id').eq(request_id_value)
         )
-        raw_items = response.get('Items', [])
+
         if not raw_items:
             print(f"No avatar items found by request_id scan. Falling back via Orders table for {request_id_value}.")
             raw_items = get_avatar_items_from_orders(request_id_value)
