@@ -142,6 +142,23 @@ def get_avatar_items_from_orders(request_id: str):
         print(f"Warning: fallback fetch via Orders failed for {request_id}: {exc}")
         return []
 
+def _latest_per_filter(items):
+    """Return only the most-recent avatar per filter_id, suppressing retried duplicates."""
+    best = {}
+    no_filter = []
+    for item in items:
+        fid = item.get("filter_id")
+        if not fid:
+            no_filter.append(item)
+            continue
+        existing = best.get(fid)
+        if existing is None or (item.get("creation_date") or "") > (existing.get("creation_date") or ""):
+            best[fid] = item
+    result = list(best.values()) + no_filter
+    print(f"_latest_per_filter: {len(items)} raw -> {len(result)} after dedup ({len(items) - len(result)} suppressed)")
+    return result
+
+
 def lambda_handler(event, context):
     """
     Lambda function to fetch avatars based on request_id.
@@ -188,7 +205,9 @@ def lambda_handler(event, context):
         if not raw_items:
             print(f"No avatar items found by request_id scan. Falling back via Orders table for {request_id_value}.")
             raw_items = get_avatar_items_from_orders(request_id_value)
-        
+
+        raw_items = _latest_per_filter(raw_items)
+
         # Transform items for the frontend
         formatted_items = []
         for item in raw_items:
