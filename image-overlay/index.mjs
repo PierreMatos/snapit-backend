@@ -15,6 +15,21 @@ const avatarsTableName = 'Avatars'; // Define Avatars table name
 const LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3798_andoraitools";
 const LIGHTX_HOST = "api.lightxeditor.com";
 
+const VARIANT_CONFIG = {
+  default: { outputField: "output_url", keySuffix: "", filenamePrefix: "snapit_print_" },
+  big: { outputField: "output_url_big", keySuffix: "_big", filenamePrefix: "snapit_big_print_" },
+  noqr: { outputField: "output_url_noqr", keySuffix: "_noqr", filenamePrefix: "snapit_print_noqr_" },
+};
+
+function getVariantConfig(variant) {
+  return VARIANT_CONFIG[variant] || VARIANT_CONFIG.default;
+}
+
+function getExistingOutputUrl(item, variant) {
+  const config = getVariantConfig(variant);
+  return item?.[config.outputField] || null;
+}
+
 export const handler = async (event) => {
   let orderIdForFailure = null;
 
@@ -36,10 +51,15 @@ export const handler = async (event) => {
         : "default";
     const orderId = body.orderId;
     const requestId = body.requestId; // Added requestId
-    const printVariant = String(body.printVariant || "default").toLowerCase();
+    const includeQrCode = body.includeQrCode !== false && body.skipQrCode !== true;
+    let effectiveVariant = String(body.printVariant || "default").toLowerCase();
+    if (!includeQrCode && effectiveVariant === "default") {
+      effectiveVariant = "noqr";
+    }
+    const variantConfig = getVariantConfig(effectiveVariant);
     orderIdForFailure = orderId || null;
 
-    console.log(`Using overlay from: ${overlaySource}`);
+    console.log(`Using overlay from: ${overlaySource}, includeQrCode: ${includeQrCode}, variant: ${effectiveVariant}`);
 
     if (!originalImageUrl || !orderId || !requestId) {
       throw new Error("Missing imageUrl, orderId, or requestId");
@@ -53,7 +73,7 @@ export const handler = async (event) => {
     console.log(`Checking for existing processed image for orderId (id): ${orderId}`);
     const { Item } = await docClient.send(new GetCommand(getItemParams));
 
-    const existingOutputUrl = printVariant === "big" ? Item?.output_url_big : Item?.output_url;
+    const existingOutputUrl = getExistingOutputUrl(Item, effectiveVariant);
     if (existingOutputUrl) {
       // Ensure request linkage fields exist even on already-processed rows.
       await docClient.send(new UpdateCommand({
@@ -66,7 +86,7 @@ export const handler = async (event) => {
         ReturnValues: "NONE"
       }));
 
-      console.log(`Order ID ${orderId} has already been processed for variant ${printVariant}. Returning existing URL: ${existingOutputUrl}`);
+      console.log(`Order ID ${orderId} has already been processed for variant ${effectiveVariant}. Returning existing URL: ${existingOutputUrl}`);
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -95,16 +115,7 @@ export const handler = async (event) => {
       fetchImage(overlayUrl)
     ]);
 
-    // Step 3a: Generate QR Code
-    const qrCodeUrl = `https://www.snapitrabbit.com/avatars/${requestId}`;
-    const qrCodeBuffer = await qrcode.toBuffer(qrCodeUrl, {
-      errorCorrectionLevel: 'H', // High error correction
-      type: 'png',
-      margin: 1, // Minimal margin
-      width: 200 // Initial width, will be resized based on the main image
-    });
-
-    // Step 3b: Resize overlay to avatar dimensions before compositing.
+    // Step 3: Composite overlay onto avatar; optionally add QR (default: yes, kiosk unchanged).
     const avatarMetadata = await sharp(avatarBuffer).metadata();
     const resizedOverlayBuffer = await sharp(overlayBuffer)
       .resize({
@@ -114,35 +125,43 @@ export const handler = async (event) => {
       })
       .toBuffer();
 
-    // Composite overlay onto avatar first
     const avatarWithOverlayBuffer = await sharp(avatarBuffer)
       .composite([{ input: resizedOverlayBuffer, top: 0, left: 0 }])
       .toBuffer();
 
-    // Step 3c: Composite QR code onto the avatar+overlay image
-    const avatarWithOverlayMetadata = await sharp(avatarWithOverlayBuffer).metadata();
-    const qrCodeSize = Math.floor(avatarWithOverlayMetadata.width * 0.15); // 15% of avatar+overlay width
+    let finalImageBuffer;
+    if (includeQrCode) {
+      const qrCodeUrl = `https://www.snapitrabbit.com/avatars/${requestId}`;
+      const qrCodeBuffer = await qrcode.toBuffer(qrCodeUrl, {
+        errorCorrectionLevel: 'H',
+        type: 'png',
+        margin: 1,
+        width: 200
+      });
 
-    const qrCodeResizedBuffer = await sharp(qrCodeBuffer)
-      .resize(qrCodeSize)
-      .toBuffer();
+      const avatarWithOverlayMetadata = await sharp(avatarWithOverlayBuffer).metadata();
+      const qrCodeSize = Math.floor(avatarWithOverlayMetadata.width * 0.15);
+      const qrCodeResizedBuffer = await sharp(qrCodeBuffer)
+        .resize(qrCodeSize)
+        .toBuffer();
+      const qrTop = avatarWithOverlayMetadata.height - qrCodeSize - Math.floor(avatarWithOverlayMetadata.height * 0.02);
+      const qrLeft = avatarWithOverlayMetadata.width - qrCodeSize - Math.floor(avatarWithOverlayMetadata.width * 0.05);
 
-    // Position QR code at bottom right of the avatar+overlay image (adjust padding as needed)
-    const qrTop = avatarWithOverlayMetadata.height - qrCodeSize - Math.floor(avatarWithOverlayMetadata.height * 0.02); // 5% padding from bottom
-    const qrLeft = avatarWithOverlayMetadata.width - qrCodeSize - Math.floor(avatarWithOverlayMetadata.width * 0.05);   // 5% padding from right
-
-    const finalImageBuffer = await sharp(avatarWithOverlayBuffer)
-      .composite([{ input: qrCodeResizedBuffer, top: qrTop, left: qrLeft }])
-      .jpeg()
-      .toBuffer();
+      finalImageBuffer = await sharp(avatarWithOverlayBuffer)
+        .composite([{ input: qrCodeResizedBuffer, top: qrTop, left: qrLeft }])
+        .jpeg()
+        .toBuffer();
+    } else {
+      console.log(`Skipping QR code for orderId ${orderId}`);
+      finalImageBuffer = await sharp(avatarWithOverlayBuffer)
+        .jpeg()
+        .toBuffer();
+    }
 
     // Step 4: Upload to S3
     const bucketName = 'snapitbucket';
-    const isBigVariant = printVariant === "big";
-    const key = isBigVariant ? `prints/${orderId}_big.jpg` : `prints/${orderId}.jpg`;
-    const printFilename = isBigVariant
-      ? `snapit_big_print_${orderId}.jpg`
-      : `snapit_print_${orderId}.jpg`;
+    const key = `prints/${orderId}${variantConfig.keySuffix}.jpg`;
+    const printFilename = `${variantConfig.filenamePrefix}${orderId}.jpg`;
 
     await s3.send(new PutObjectCommand({
       Bucket: bucketName,
@@ -157,10 +176,8 @@ export const handler = async (event) => {
     // Store S3 URL in DynamoDB
     const updateItemParams = {
       TableName: avatarsTableName,
-      Key: { id: orderId }, // orderId from input corresponds to 'id' in Avatars table
-      UpdateExpression: isBigVariant
-        ? "set output_url_big = :url, request_id = :reqId, requestId = :reqId"
-        : "set output_url = :url, request_id = :reqId, requestId = :reqId",
+      Key: { id: orderId },
+      UpdateExpression: `set ${variantConfig.outputField} = :url, request_id = :reqId, requestId = :reqId`,
       ExpressionAttributeValues: {
         ":url": s3Url,
         ":reqId": requestId,
