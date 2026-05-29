@@ -22,14 +22,27 @@ export const handler = async (event) => {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event;
 
     const originalImageUrl = body.imageUrl; // Will be avatarUrl
-    const overlayUrl = body.overlayUrl;
+    const DEFAULT_OVERLAY_URL =
+      process.env.DEFAULT_OVERLAY_URL ||
+      "https://snapitbucket.s3.eu-central-1.amazonaws.com/assets/moldura%2Bcom%2Btransparencia.png";
+    const overlayUrl =
+      body.overlayUrl ??
+      body["image-overlay"] ??
+      DEFAULT_OVERLAY_URL;
+    const overlaySource = body.overlayUrl
+      ? "overlayUrl"
+      : body["image-overlay"]
+        ? "image-overlay"
+        : "default";
     const orderId = body.orderId;
     const requestId = body.requestId; // Added requestId
     const printVariant = String(body.printVariant || "default").toLowerCase();
     orderIdForFailure = orderId || null;
 
-    if (!originalImageUrl || !overlayUrl || !orderId || !requestId) {
-      throw new Error("Missing imageUrl, overlayUrl, orderId, or requestId");
+    console.log(`Using overlay from: ${overlaySource}`);
+
+    if (!originalImageUrl || !orderId || !requestId) {
+      throw new Error("Missing imageUrl, orderId, or requestId");
     }
 
     // Check if orderId already exists in Avatars table (as 'id')
