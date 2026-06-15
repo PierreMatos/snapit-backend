@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import http.client
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -20,6 +21,14 @@ LIGHTX_API_KEY = "9243575a15d641da829c5acac13cf1a2_85db21be6e604aa19ed83b94e3ce3
 # Initialize AWS clients
 dynamodb = boto3.resource('dynamodb', region_name=DYNAMODB_REGION)
 filter_table = dynamodb.Table(FILTER_TABLE_NAME)
+
+
+def sanitize_lightx_prompt(text):
+    """Collapse newlines/tabs/extra spaces for LightX textPrompt."""
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", str(text)).strip()
+
 
 def make_lightx_request(image_url, style_image_url, text_prompt):
     """Sends the avatar creation request to the LightX API."""
@@ -144,7 +153,10 @@ def lambda_handler(event, context):
 
 
         style_image_url = filter_item.get("image_style")
-        text_prompt = filter_item.get("prompt")
+        raw_prompt = filter_item.get("prompt") or ""
+        text_prompt = sanitize_lightx_prompt(raw_prompt)
+        if raw_prompt and text_prompt != raw_prompt:
+            logger.info(f"Sanitized prompt for LightX (filterId={filter_id})")
 
         if not style_image_url or not text_prompt:
              logger.error(f"Filter data incomplete for filterId {filter_id}. Missing style_image or prompt.")
